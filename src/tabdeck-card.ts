@@ -21,6 +21,10 @@ import "./components/tabdeck-tabbar";
 import { isActiveBadge } from "./components/tabdeck-tab";
 
 // Events that count as the user interacting with the card.
+// After a swipe changes the tab, these are swallowed (capture phase) until the
+// finger lifts, so the card under the swipe's start point doesn't also see a
+// tap/hold and open its more-info dialog.
+const SWALLOW_EVENTS = ["touchend", "touchcancel", "pointerup", "pointercancel", "mouseup", "click"] as const;
 const INTERACTION_EVENTS = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
 
 // Tab display fields that may be Jinja templates (rendered live by HA).
@@ -138,6 +142,8 @@ export class TabdeckCard extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     for (const ev of INTERACTION_EVENTS) this.addEventListener(ev, this._onInteraction);
+    for (const ev of SWALLOW_EVENTS) this.addEventListener(ev, this._swallow, true);
+    this.addEventListener("touchstart", this._resetSwallow, true);
     this._syncTimer();
     this._syncWidthObserver();
     // HA moves cards around the DOM during layout; re-observe on reconnect.
@@ -147,6 +153,8 @@ export class TabdeckCard extends LitElement {
   disconnectedCallback(): void {
     super.disconnectedCallback();
     for (const ev of INTERACTION_EVENTS) this.removeEventListener(ev, this._onInteraction);
+    for (const ev of SWALLOW_EVENTS) this.removeEventListener(ev, this._swallow, true);
+    this.removeEventListener("touchstart", this._resetSwallow, true);
     this._stopTimer();
     this._spyObserver?.disconnect();
     this._spyObserver = undefined;
@@ -675,6 +683,30 @@ export class TabdeckCard extends LitElement {
 
   private _touchStart?: SwipePoint;
 
+  // True from the moment a swipe changes the tab until just after the finger
+  // lifts (see SWALLOW_EVENTS).
+  private _swallowing = false;
+  private _swallowTimer?: ReturnType<typeof setTimeout>;
+
+  private _resetSwallow = (): void => {
+    this._swallowing = false;
+    clearTimeout(this._swallowTimer);
+  };
+
+  private _swallow = (e: Event): void => {
+    if (!this._swallowing) return;
+    // Only events that began inside the deck's content, not the tab bar.
+    const inPanel = e.composedPath().some((n) => (n as HTMLElement).id === "tabdeck-panel");
+    if (!inPanel) return;
+    e.stopPropagation();
+    if (e.cancelable) e.preventDefault();
+    if (e.type === "touchend" || e.type === "touchcancel") {
+      clearTimeout(this._swallowTimer);
+      // Keep swallowing briefly so the synthesized click is caught too.
+      this._swallowTimer = setTimeout(() => (this._swallowing = false), 400);
+    }
+  };
+
   // Stop touch events leaving the card so a page-level swipe handler (e.g.
   // hass-swipe-navigation on an ancestor) never sees a swipe made on the deck.
   private _captureTouch = (e: TouchEvent): void => {
@@ -735,6 +767,11 @@ export class TabdeckCard extends LitElement {
   private _applySwipe(start: SwipePoint, end: SwipePoint): void {
     const dir = detectSwipe(start, end);
     if (!dir || !this._config) return;
+    // A recognised swipe must not also act as a tap/hold on the card beneath
+    // the finger. Fallback timer so this can never get stuck on.
+    this._swallowing = true;
+    clearTimeout(this._swallowTimer);
+    this._swallowTimer = setTimeout(() => (this._swallowing = false), 1500);
     // Wrap around the ends when swipe_wrap is on; otherwise clamp. Disabled
     // and action tabs are stepped over.
     const target = this._stepContent(
