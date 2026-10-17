@@ -691,6 +691,20 @@ export class TabdeckCard extends LitElement {
     this._touchStart = { x: t.clientX, y: t.clientY, t: e.timeStamp };
   };
 
+  // Recognise the swipe as soon as the finger has travelled far enough, instead
+  // of waiting for touchend: the browser can turn a slightly diagonal drag into
+  // a native scroll and send touchcancel, so touchend never arrives.
+  private _onTouchMove = (e: TouchEvent): void => {
+    this._captureTouch(e);
+    const start = this._touchStart;
+    if (!start || !this._config?.swipe || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const now = { x: t.clientX, y: t.clientY, t: e.timeStamp };
+    if (detectSwipe(start, now) === null) return;
+    this._touchStart = undefined;
+    this._applySwipe(start, now);
+  };
+
   private _onTouchEnd = (e: TouchEvent): void => {
     this._captureTouch(e);
     const start = this._touchStart;
@@ -841,8 +855,9 @@ export class TabdeckCard extends LitElement {
         id="tabdeck-panel"
         role="tabpanel"
         ?hidden=${this._collapsed}
+        style=${cfg.swipe ? "touch-action: pan-y" : ""}
         @touchstart=${this._onTouchStart}
-        @touchmove=${this._captureTouch}
+        @touchmove=${this._onTouchMove}
         @touchend=${this._onTouchEnd}
         @pointerdown=${this._onPointerDown}
         @pointerup=${this._onPointerUp}
