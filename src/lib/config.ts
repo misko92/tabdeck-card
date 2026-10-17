@@ -98,6 +98,9 @@ export interface TabdeckCardConfig {
   lazy: boolean;
   unmount_hidden: boolean;
   swipe_wrap: boolean;
+  // While swipe is on, keep touch gestures inside the card so page-level swipe
+  // navigation (e.g. hass-swipe-navigation) does not also fire. Default true.
+  swipe_capture: boolean;
   swipe_mouse: boolean;
   animated: boolean;
   accent_indicator: boolean;
@@ -289,6 +292,7 @@ export function normalizeConfig(raw: any): TabdeckCardConfig {
     lazy: Boolean(raw?.lazy),
     unmount_hidden: Boolean(raw?.unmount_hidden),
     swipe_wrap: Boolean(raw?.swipe_wrap),
+    swipe_capture: raw?.swipe_capture !== false,
     swipe_mouse: Boolean(raw?.swipe_mouse),
     animated: raw?.animated === undefined ? true : Boolean(raw.animated),
     accent_indicator: raw?.accent_indicator === undefined ? true : Boolean(raw.accent_indicator),

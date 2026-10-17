@@ -675,7 +675,14 @@ export class TabdeckCard extends LitElement {
 
   private _touchStart?: SwipePoint;
 
+  // Stop touch events leaving the card so a page-level swipe handler (e.g.
+  // hass-swipe-navigation on an ancestor) never sees a swipe made on the deck.
+  private _captureTouch = (e: TouchEvent): void => {
+    if (this._config?.swipe && this._config.swipe_capture) e.stopPropagation();
+  };
+
   private _onTouchStart = (e: TouchEvent): void => {
+    this._captureTouch(e);
     if (!this._config?.swipe || e.touches.length !== 1) {
       this._touchStart = undefined;
       return;
@@ -685,6 +692,7 @@ export class TabdeckCard extends LitElement {
   };
 
   private _onTouchEnd = (e: TouchEvent): void => {
+    this._captureTouch(e);
     const start = this._touchStart;
     this._touchStart = undefined;
     if (!start || !this._config?.swipe) return;
@@ -834,6 +842,7 @@ export class TabdeckCard extends LitElement {
         role="tabpanel"
         ?hidden=${this._collapsed}
         @touchstart=${this._onTouchStart}
+        @touchmove=${this._captureTouch}
         @touchend=${this._onTouchEnd}
         @pointerdown=${this._onPointerDown}
         @pointerup=${this._onPointerUp}
