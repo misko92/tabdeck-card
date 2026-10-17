@@ -1,0 +1,1304 @@
+import { LitElement, html, css, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
+import { fireEvent } from "custom-card-helpers";
+import type { HomeAssistant } from "../types";
+import { normalizeConfig, normalizeTab, type TabdeckCardConfig } from "../lib/config";
+import { isTemplate } from "../lib/templates";
+import { PRESET_NAMES, applyPresetToConfig, isPreset } from "../lib/presets";
+import { SOURCE_TAB_TEMPLATE } from "../lib/sources";
+import "../components/tabdeck-tabbar";
+
+// MDI icon paths for the per-tab reorder/delete buttons. Inlined rather than
+// pulling in @mdi/js so the bundle stays dependency-free.
+const MDI_ARROW_UP = "M13,20H11V8L5.5,13.5L4.08,12.08L12,4.16L19.92,12.08L18.5,13.5L13,8V20Z";
+const MDI_ARROW_DOWN = "M11,4H13V16L18.5,10.5L19.92,11.92L12,19.84L4.08,11.92L5.5,10.5L11,16V4Z";
+const MDI_DELETE =
+  "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z";
+const MDI_PLUS = "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z";
+const MDI_COPY =
+  "M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z";
+const MDI_DRAG =
+  "M7,19V17H9V19H7M11,19V17H13V19H11M15,19V17H17V19H15M7,15V13H9V15H7M11,15V13H13V15H11M15,15V13H17V15H15M7,11V9H9V11H7M11,11V9H13V11H11M15,11V9H17V11H15M7,7V5H9V7H7M11,7V5H13V7H11M15,7V5H17V7H15Z";
+const MDI_EXPORT =
+  "M23,12L19,8V11H10V13H19V16M1,18V6C1,4.89 1.9,4 3,4H15A2,2 0 0,1 17,6V9H15V6H3V18H15V15H17V18A2,2 0 0,1 15,20H3A2,2 0 0,1 1,18Z";
+const MDI_IMPORT =
+  "M14,12L10,8V11H2V13H10V16M20,18V6C20,4.89 19.1,4 18,4H6A2,2 0 0,0 4,6V9H6V6H18V18H6V15H4V18A2,2 0 0,0 6,20H18A2,2 0 0,0 20,18Z";
+const MDI_CHEVRON_DOWN = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z";
+
+// Fallback icon shown in a collapsed tab header when the tab has no icon set.
+const DEFAULT_TAB_ICON = "mdi:tab";
+
+// Per-tab field schema for ha-form. The `icon` selector renders HA's native
+// searchable icon picker (with live previews); the text/select/boolean
+// selectors let ha-form resolve the right sub-elements for whatever HA frontend
+// version is running, so we never hard-code version-specific element names.
+const TAB_SCHEMA = [
+  { name: "name", selector: { text: {} } },
+  { name: "subtitle", selector: { text: {} } },
+  { name: "icon", selector: { icon: {} } },
+  { name: "accent", selector: { text: {} } },
+  { name: "color", selector: { text: {} } },
+  { name: "badge", selector: { text: {} } },
+  { name: "badge_color", selector: { text: {} } },
+  { name: "disabled", selector: { boolean: {} } },
+  { name: "card_size", selector: { number: { min: 1, max: 20, step: 1, mode: "box" } } },
+  { name: "hold_action", selector: { ui_action: {} } },
+  { name: "badge_action", selector: { ui_action: {} } },
+  { name: "tap_action", selector: { ui_action: {} } },
+  { name: "enter_action", selector: { ui_action: {} } },
+  { name: "leave_action", selector: { ui_action: {} } },
+];
+
+// Common built-in Lovelace card types offered when choosing/changing a tab's
+// card. `custom_value` lets the user type anything else (e.g. `custom:my-card`).
+const CARD_TYPES = [
+  "entities", "tile", "button", "light", "thermostat", "humidifier",
+  "weather-forecast", "markdown", "picture", "picture-entity", "picture-glance",
+  "glance", "gauge", "sensor", "history-graph", "statistics-graph",
+  "media-control", "map", "area", "alarm-panel", "calendar", "todo-list",
+  "iframe", "entity", "conditional", "vertical-stack", "horizontal-stack", "grid",
+  // Popular custom cards (HACS) — suggestions only; custom_value still allows
+  // any type the user types.
+  "custom:mushroom-template-card", "custom:mushroom-entity-card",
+  "custom:button-card", "custom:mini-graph-card", "custom:apexcharts-card",
+  "custom:auto-entities", "custom:bubble-card", "custom:layout-card",
+];
+
+const CARD_TYPE_SCHEMA = [
+  {
+    name: "type",
+    selector: {
+      select: {
+        mode: "dropdown",
+        custom_value: true,
+        options: CARD_TYPES.map((t) => ({ value: t, label: t })),
+      },
+    },
+  },
+];
+
+const TAB_LABELS: Record<string, string> = {
+  name: "Tab name",
+  subtitle: "Subtitle",
+  icon: "Icon",
+  accent: "Accent colour",
+  color: "Text/icon colour",
+  badge: "Badge (entity id or template)",
+  badge_color: "Badge colour",
+  disabled: "Disable tab (greyed, not selectable)",
+  card_size: "Card size hint (rows)",
+  hold_action: "Long-press action",
+  badge_action: "Badge tap action",
+  tap_action: "Tap action (replaces opening the tab, e.g. navigate)",
+  enter_action: "Action when this tab is opened",
+  leave_action: "Action when leaving this tab",
+};
+
+const GLOBAL_LABELS: Record<string, string> = {
+  preset: "Style preset (applies a bundle of the options below)",
+  position: "Position",
+  style: "Style",
+  tab_display: "Tab display",
+  align: "Tab alignment",
+  badge_display: "Badge display",
+  hide_inactive_badge: "Hide inactive badges (0/off)",
+  transition: "Panel transition",
+  indicator_size: "Indicator thickness (px)",
+  indicator_radius: "Indicator corner radius (px)",
+  remember: "Remember selected tab",
+  remember_entity: "Remember entity (input_number/input_text)",
+  storage_key: "Storage key (browser mode)",
+  default_tab: "Default tab",
+  scrollable: "Scrollable",
+  lazy: "Lazy-mount inactive tabs",
+  unmount_hidden: "Unmount hidden tabs (save memory)",
+  swipe_wrap: "Swipe wraps around ends",
+  animated: "Animate indicator",
+  accent_indicator: "Colour indicator by tab accent",
+  header: "Show header (active tab title above content)",
+  aria_label: "Accessible name for the tab bar",
+  sticky: "Sticky tab bar",
+  elevation: "Raise bar with shadow",
+  scroll_buttons: "Scroll buttons when bar overflows",
+  overflow_menu: "Overflow ⋯ menu when bar overflows",
+  bar_background: "Tab bar background colour",
+  swipe: "Swipe to change tabs (mobile)",
+  swipe_mouse: "Mouse drag to change tabs (desktop)",
+  tab_display_narrow: "Tab display on narrow cards",
+  narrow_width: "Narrow below (px)",
+  split: "Side-by-side split at or above width (px, 0 = off)",
+  collapsible: "Collapsible (tap the active tab to fold content)",
+  start_collapsed: "Start collapsed",
+  scroll_spy: "Scroll-spy: stack tabs as sections",
+  auto_rotate: "Auto-rotate tabs every (seconds, 0 = off)",
+  idle_return: "Return to default tab after idle (seconds, 0 = off)",
+};
+
+interface ConditionSection {
+  key: "visibility" | "alert" | "default_if";
+  label: string;
+  hint: string;
+}
+
+// Per-tab condition lists editable in the visual editor.
+const CONDITION_SECTIONS: ConditionSection[] = [
+  { key: "visibility", label: "Visibility", hint: "show the tab only when…" },
+  { key: "alert", label: "Alert", hint: "pulse the tab when…" },
+  { key: "default_if", label: "Default when", hint: "start on this tab when…" },
+];
+
+export type CardEditorTag =
+  | "hui-card-element-editor"
+  | "ha-yaml-editor"
+  | "textarea-json";
+
+// Decide which nested card editor to use. Prefer Home Assistant's own
+// hui-card-element-editor (visual + per-card YAML toggle + card picker); fall
+// back to ha-yaml-editor, then to a raw JSON textarea, so the editor never
+// hard-fails on an HA version that lacks the internal element.
+export function pickCardEditorTag(has: (tag: string) => boolean): CardEditorTag {
+  if (has("hui-card-element-editor")) return "hui-card-element-editor";
+  if (has("ha-yaml-editor")) return "ha-yaml-editor";
+  return "textarea-json";
+}
+
+@customElement("tabdeck-card-editor")
+export class TabdeckCardEditor extends LitElement {
+  @state() private _config?: TabdeckCardConfig;
+  // Index of the tab currently being edited in the drill-in card view, or null
+  // for the tab-list view.
+  @state() private _editingTab: number | null = null;
+  // Index of the tab whose card JSON failed to parse, so we can show an error
+  // without discarding what the user is typing.
+  @state() private _cardError: number | null = null;
+  // Indices of tabs whose fields are expanded in the list view. Empty by
+  // default, so every tab opens collapsed to save vertical space.
+  @state() private _expanded = new Set<number>();
+  // Import panel: open state, pending parsed value, and error message.
+  @state() private _importOpen = false;
+  @state() private _importError = "";
+  private _importValue: any;
+  // Transient status line (e.g. "Copied tab …").
+  @state() private _status = "";
+  private _statusTimer?: ReturnType<typeof setTimeout>;
+  public hass?: HomeAssistant;
+  // Set by Home Assistant's card-editor dialog; forwarded to the nested editor.
+  public lovelace?: any;
+
+  setConfig(config: any): void {
+    this._config = normalizeConfig(config);
+  }
+
+  private _emit(next: TabdeckCardConfig): void {
+    this._config = next;
+    fireEvent(this, "config-changed", { config: this._forOutput(next) } as any);
+    this.requestUpdate();
+  }
+
+  // Drop values the card derives itself, so they aren't baked into the YAML:
+  // an auto_tabs `source` regenerates its template (and default blueprint).
+  private _forOutput(cfg: TabdeckCardConfig): TabdeckCardConfig {
+    const auto = cfg.auto_tabs;
+    if (!auto?.source) return cfg;
+    const { template: _t, ...rest } = auto;
+    const out: any = { ...rest };
+    if (out.tab_template === SOURCE_TAB_TEMPLATE) delete out.tab_template;
+    for (const k of ["domains", "exclude"]) if (out[k] === undefined) delete out[k];
+    return { ...cfg, auto_tabs: out };
+  }
+
+  private _patch(partial: Partial<TabdeckCardConfig>): void {
+    if (!this._config) return;
+    this._emit({ ...this._config, ...partial });
+  }
+
+  private _patchTab(index: number, partial: Record<string, any>): void {
+    if (!this._config) return;
+    const tabs = this._config.tabs.map((t, i) =>
+      i === index ? { ...t, ...partial } : t,
+    );
+    this._emit({ ...this._config, tabs });
+  }
+
+  private _addTab(): void {
+    if (!this._config) return;
+    // Start with a typeless card so the drill-in shows HA's card picker
+    // (rather than silently locking the new tab to one card type).
+    const tabs = [
+      ...this._config.tabs,
+      { name: `Tab ${this._config.tabs.length + 1}`, card: {} as any },
+    ];
+    // Appending doesn't shift existing indices, so keep what's open and also
+    // expand the new tab so the user can configure it immediately.
+    const newIndex = this._config.tabs.length;
+    this._expanded = new Set(this._expanded).add(newIndex);
+    this._emit({ ...this._config, tabs });
+  }
+
+  private _expandAll(): void {
+    if (!this._config) return;
+    this._expanded = new Set(this._config.tabs.map((_, i) => i));
+  }
+
+  private _collapseAll(): void {
+    this._expanded = new Set();
+  }
+
+  private _deleteTab(index: number): void {
+    if (!this._config) return;
+    const tabs = this._config.tabs.filter((_, i) => i !== index);
+    this._expanded = new Set();
+    this._emit({ ...this._config, tabs });
+  }
+
+  private _duplicateTab(index: number): void {
+    if (!this._config) return;
+    const src = this._config.tabs[index];
+    if (!src) return;
+    // Deep clone so the copy doesn't share nested card/visibility objects.
+    const copy = JSON.parse(JSON.stringify(src));
+    copy.name = `${src.name ?? `Tab ${index + 1}`} copy`;
+    const tabs = this._config.tabs.slice();
+    tabs.splice(index + 1, 0, copy);
+    this._expanded = new Set();
+    this._emit({ ...this._config, tabs });
+  }
+
+  private _flash(message: string): void {
+    this._status = message;
+    if (this._statusTimer) clearTimeout(this._statusTimer);
+    this._statusTimer = setTimeout(() => (this._status = ""), 2500);
+  }
+
+  // Copy one tab's config (as JSON, which is valid YAML) to paste into another
+  // deck's "Import tab". Falls back to execCommand on insecure (http) origins,
+  // where navigator.clipboard is unavailable.
+  private async _copyTab(index: number): Promise<void> {
+    const tab = this._config?.tabs[index];
+    if (!tab) return;
+    const text = JSON.stringify(tab, null, 2);
+    let ok = false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.cssText = "position:fixed;opacity:0";
+      this.renderRoot.appendChild(ta);
+      ta.select();
+      try {
+        ok = document.execCommand("copy");
+      } catch {
+        ok = false;
+      }
+      ta.remove();
+    }
+    const label = tab.name || `Tab ${index + 1}`;
+    this._flash(ok ? `Copied tab "${label}" — paste it into Import tab.` : "Couldn't access the clipboard.");
+  }
+
+  private _toggleImport(): void {
+    this._importOpen = !this._importOpen;
+    this._importError = "";
+    this._importValue = undefined;
+  }
+
+  // Accept one tab object or a list of them.
+  private _applyImport(): void {
+    if (!this._config) return;
+    const raw = this._importValue;
+    const list = Array.isArray(raw) ? raw : [raw];
+    const tabLike = (o: any) =>
+      o && typeof o === "object" && !Array.isArray(o) && (o.card || o.cards || o.tap_action);
+    if (list.length === 0 || !list.every(tabLike)) {
+      this._importError = "That doesn't look like a tab (needs a card, cards or tap_action).";
+      return;
+    }
+    const start = this._config.tabs.length;
+    const tabs = [...this._config.tabs, ...list.map(normalizeTab)];
+    const expanded = new Set(this._expanded);
+    for (let i = start; i < tabs.length; i++) expanded.add(i);
+    this._expanded = expanded;
+    this._importOpen = false;
+    this._importValue = undefined;
+    this._flash(`Imported ${list.length} tab${list.length > 1 ? "s" : ""}.`);
+    this._emit({ ...this._config, tabs });
+  }
+
+  private _renderImport() {
+    const onYaml = (e: CustomEvent) => {
+      e.stopPropagation();
+      const d = e.detail as any;
+      this._importValue = d?.isValid === false ? undefined : d?.value;
+      this._importError = "";
+    };
+    return html`
+      <div class="import-panel">
+        <div class="import-hint">Paste a tab (or a list of tabs) copied with <b>Copy tab</b>, or any tab YAML.</div>
+        ${customElements.get("ha-yaml-editor")
+          ? html`<ha-yaml-editor @value-changed=${onYaml}></ha-yaml-editor>`
+          : html`<textarea
+              class="import-json"
+              rows="8"
+              placeholder='{"name": "Lights", "card": {"type": "light", "entity": "light.kitchen"}}'
+              @input=${(e: any) => {
+                try {
+                  this._importValue = JSON.parse(e.target.value);
+                  this._importError = "";
+                } catch {
+                  this._importValue = undefined;
+                }
+              }}
+            ></textarea>`}
+        ${this._importError ? html`<div class="import-error" role="alert">${this._importError}</div>` : nothing}
+        <div class="import-actions">
+          <ha-button class="import-apply" @click=${this._applyImport}>Add</ha-button>
+          <ha-button class="import-cancel" @click=${this._toggleImport}>Cancel</ha-button>
+        </div>
+      </div>
+    `;
+  }
+
+  private _toggleExpanded(index: number): void {
+    const next = new Set(this._expanded);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
+    this._expanded = next;
+  }
+
+  private _onHeaderKeydown(index: number, e: KeyboardEvent): void {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      this._toggleExpanded(index);
+    }
+  }
+
+  private _editCardJson(index: number, raw: string): void {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      this._cardError = index;
+      return;
+    }
+    this._cardError = null;
+    this._patchTab(index, { card: parsed });
+  }
+
+  // Drag-to-reorder via ha-sortable (fires item-moved with old/new indices).
+  private _onItemMoved(e: CustomEvent): void {
+    if (!this._config) return;
+    const { oldIndex, newIndex } = (e.detail ?? {}) as { oldIndex: number; newIndex: number };
+    if (
+      oldIndex == null ||
+      newIndex == null ||
+      oldIndex === newIndex ||
+      oldIndex < 0 ||
+      newIndex < 0 ||
+      oldIndex >= this._config.tabs.length ||
+      newIndex >= this._config.tabs.length
+    )
+      return;
+    const tabs = this._config.tabs.slice();
+    const [moved] = tabs.splice(oldIndex, 1);
+    tabs.splice(newIndex, 0, moved);
+    this._expanded = new Set();
+    this._emit({ ...this._config, tabs });
+  }
+
+  // Editor warnings for footguns the user can't see at a glance.
+  private _warnings(): string[] {
+    const cfg = this._config;
+    if (!cfg) return [];
+    const out: string[] = [];
+    const names = cfg.tabs.map((t) => t.name ?? "").filter((n) => n);
+    const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+    if (dupes.length > 0) {
+      out.push(
+        `Duplicate tab names (${[...new Set(dupes)].join(", ")}). "Remember: url" and default-tab-by-name may be ambiguous.`,
+      );
+    }
+    return out;
+  }
+
+  private _move(index: number, delta: number): void {
+    if (!this._config) return;
+    const target = index + delta;
+    if (target < 0 || target >= this._config.tabs.length) return;
+    const tabs = this._config.tabs.slice();
+    [tabs[index], tabs[target]] = [tabs[target], tabs[index]];
+    this._expanded = new Set();
+    this._emit({ ...this._config, tabs });
+  }
+
+  private _openCard(index: number): void {
+    this._cardError = null;
+    this._editingTab = index;
+  }
+
+  private _closeCard(): void {
+    this._editingTab = null;
+  }
+
+  private get _lovelace(): any {
+    return this.lovelace ?? { config: { views: [] }, editMode: true };
+  }
+
+  private _onNativeCardChanged(index: number, e: CustomEvent): void {
+    e.stopPropagation();
+    const config = (e.detail as any)?.config;
+    if (!config) return;
+    this._patchTab(index, { card: config });
+  }
+
+  // User picked a card type from the chooser; seed the tab with it so the view
+  // flips to the card editor for that type.
+  private _onTypeChosen(index: number, e: CustomEvent): void {
+    e.stopPropagation();
+    const type = (e.detail as any)?.value?.type;
+    if (!type) return;
+    this._patchTab(index, { card: { type } as any });
+  }
+
+  // Reset the card to typeless so the chooser reappears, letting the user switch
+  // to a different card type.
+  private _changeCardType(index: number): void {
+    this._patchTab(index, { card: {} as any });
+  }
+
+  private _onYamlCardChanged(index: number, e: CustomEvent): void {
+    e.stopPropagation();
+    const detail = e.detail as any;
+    if (detail?.isValid === false) return;
+    if (detail?.value === undefined) return;
+    this._patchTab(index, { card: detail.value });
+  }
+
+  // Current default_tab expressed as a single option value (tab name, or the
+  // stringified index) so it can seed the ha-form select.
+  private get _currentDefaultTab(): string | undefined {
+    const cfg = this._config!;
+    for (let i = 0; i < cfg.tabs.length; i++) {
+      const value = cfg.tabs[i].name ?? String(i);
+      if (String(cfg.default_tab) === value || cfg.default_tab === i) return value;
+    }
+    return undefined;
+  }
+
+  private _globalSchema() {
+    const cfg = this._config!;
+    // ha-form's select selector wants options as {value,label} objects.
+    const opts = (values: string[]) => values.map((v) => ({ value: v, label: v }));
+    const tabOptions = cfg.tabs.map((t, i) => ({
+      value: t.name ?? String(i),
+      label: t.name || `Tab ${i + 1}`,
+    }));
+    return [
+      { name: "preset", selector: { select: { mode: "dropdown", options: opts(["", ...PRESET_NAMES]) } } },
+      { name: "position", selector: { select: { mode: "dropdown", options: opts(["top", "bottom", "left", "right"]) } } },
+      { name: "style", selector: { select: { mode: "dropdown", options: opts(["underline", "pill", "segmented", "boxed", "text", "rail"]) } } },
+      { name: "tab_display", selector: { select: { mode: "dropdown", options: opts(["both", "icon", "label"]) } } },
+      { name: "align", selector: { select: { mode: "dropdown", options: opts(["start", "center", "end", "justify"]) } } },
+      { name: "badge_display", selector: { select: { mode: "dropdown", options: opts(["text", "dot"]) } } },
+      { name: "hide_inactive_badge", selector: { boolean: {} } },
+      { name: "transition", selector: { select: { mode: "dropdown", options: opts(["none", "fade", "slide"]) } } },
+      { name: "indicator_size", selector: { number: { min: 1, max: 16, step: 1, mode: "slider" } } },
+      { name: "indicator_radius", selector: { number: { min: 0, max: 30, step: 1, mode: "slider" } } },
+      { name: "remember", selector: { select: { mode: "dropdown", options: opts(["none", "browser", "url", "entity"]) } } },
+      { name: "remember_entity", selector: { text: {} } },
+      { name: "storage_key", selector: { text: {} } },
+      { name: "default_tab", selector: { select: { mode: "dropdown", options: tabOptions } } },
+      { name: "scrollable", selector: { select: { mode: "dropdown", options: opts(["auto", "true", "false"]) } } },
+      { name: "lazy", selector: { boolean: {} } },
+      { name: "unmount_hidden", selector: { boolean: {} } },
+      { name: "swipe_wrap", selector: { boolean: {} } },
+      { name: "animated", selector: { boolean: {} } },
+      { name: "accent_indicator", selector: { boolean: {} } },
+      { name: "header", selector: { boolean: {} } },
+      { name: "aria_label", selector: { text: {} } },
+      { name: "sticky", selector: { boolean: {} } },
+      { name: "elevation", selector: { boolean: {} } },
+      { name: "scroll_buttons", selector: { boolean: {} } },
+      { name: "overflow_menu", selector: { boolean: {} } },
+      { name: "bar_background", selector: { text: {} } },
+      { name: "swipe", selector: { boolean: {} } },
+      { name: "swipe_mouse", selector: { boolean: {} } },
+      { name: "tab_display_narrow", selector: { select: { mode: "dropdown", options: opts(["", "both", "icon", "label"]) } } },
+      { name: "narrow_width", selector: { number: { min: 100, max: 4000, step: 10, mode: "box" } } },
+      { name: "split", selector: { number: { min: 0, max: 4000, step: 10, mode: "box" } } },
+      { name: "collapsible", selector: { boolean: {} } },
+      { name: "start_collapsed", selector: { boolean: {} } },
+      { name: "scroll_spy", selector: { boolean: {} } },
+      { name: "auto_rotate", selector: { number: { min: 0, max: 3600, step: 1, mode: "box" } } },
+      { name: "idle_return", selector: { number: { min: 0, max: 86400, step: 1, mode: "box" } } },
+    ];
+  }
+
+  private get _globalData() {
+    const cfg = this._config!;
+    return {
+      preset: cfg.preset ?? "",
+      position: cfg.position,
+      style: cfg.style,
+      tab_display: cfg.tab_display,
+      align: cfg.align,
+      badge_display: cfg.badge_display,
+      hide_inactive_badge: cfg.hide_inactive_badge,
+      transition: cfg.transition,
+      indicator_size: cfg.indicator_size,
+      indicator_radius: cfg.indicator_radius,
+      remember: cfg.remember,
+      remember_entity: cfg.remember_entity ?? "",
+      storage_key: cfg.storage_key ?? "",
+      default_tab: this._currentDefaultTab,
+      scrollable: String(cfg.scrollable),
+      lazy: cfg.lazy,
+      unmount_hidden: cfg.unmount_hidden,
+      swipe_wrap: cfg.swipe_wrap,
+      animated: cfg.animated,
+      accent_indicator: cfg.accent_indicator,
+      header: cfg.header,
+      aria_label: cfg.aria_label ?? "",
+      sticky: cfg.sticky,
+      elevation: cfg.elevation,
+      scroll_buttons: cfg.scroll_buttons,
+      overflow_menu: cfg.overflow_menu,
+      bar_background: cfg.bar_background ?? "",
+      swipe: cfg.swipe,
+      swipe_mouse: cfg.swipe_mouse,
+      tab_display_narrow: cfg.tab_display_narrow ?? "",
+      narrow_width: cfg.narrow_width,
+      split: cfg.split?.min_width ?? 0,
+      collapsible: cfg.collapsible,
+      start_collapsed: cfg.start_collapsed,
+      scroll_spy: cfg.scroll_spy,
+      auto_rotate: cfg.auto_rotate?.interval ?? 0,
+      idle_return: cfg.idle_return ?? 0,
+    };
+  }
+
+  private _onGlobalChanged(e: CustomEvent): void {
+    e.stopPropagation();
+    const v = (e.detail as any).value ?? {};
+    // Picking a preset writes its bundle of values; other fields follow.
+    if (this._config && isPreset(v.preset) && v.preset !== this._config.preset) {
+      this._emit(applyPresetToConfig(this._config, v.preset));
+      return;
+    }
+    const scrollable =
+      v.scrollable === "auto" ? "auto" : v.scrollable === "true" || v.scrollable === true;
+    this._patch({
+      position: v.position,
+      style: v.style,
+      tab_display: v.tab_display,
+      align: v.align,
+      badge_display: v.badge_display,
+      hide_inactive_badge: !!v.hide_inactive_badge,
+      transition: v.transition,
+      indicator_size: v.indicator_size,
+      indicator_radius: v.indicator_radius,
+      remember: v.remember,
+      remember_entity: v.remember_entity || undefined,
+      storage_key: v.storage_key || undefined,
+      default_tab: v.default_tab,
+      scrollable,
+      lazy: !!v.lazy,
+      unmount_hidden: !!v.unmount_hidden,
+      swipe_wrap: !!v.swipe_wrap,
+      animated: !!v.animated,
+      accent_indicator: !!v.accent_indicator,
+      header: !!v.header,
+      aria_label: v.aria_label || undefined,
+      sticky: !!v.sticky,
+      elevation: !!v.elevation,
+      scroll_buttons: !!v.scroll_buttons,
+      overflow_menu: !!v.overflow_menu,
+      bar_background: v.bar_background || undefined,
+      swipe: !!v.swipe,
+      swipe_mouse: !!v.swipe_mouse,
+      tab_display_narrow: v.tab_display_narrow || undefined,
+      narrow_width: Number(v.narrow_width) || 450,
+      // Keep a YAML-set column count when only the width is edited.
+      split:
+        Number(v.split) > 0
+          ? { min_width: Number(v.split), columns: this._config?.split?.columns ?? 2 }
+          : undefined,
+      collapsible: !!v.collapsible,
+      start_collapsed: !!v.collapsible && !!v.start_collapsed,
+      scroll_spy: !!v.scroll_spy,
+      // Keep a YAML-set resume_after when only the interval is edited.
+      auto_rotate:
+        Number(v.auto_rotate) > 0
+          ? {
+              interval: Math.max(2, Number(v.auto_rotate)),
+              resume_after: this._config?.auto_rotate?.resume_after ?? 60,
+            }
+          : undefined,
+      idle_return: Number(v.idle_return) > 0 ? Math.max(5, Number(v.idle_return)) : undefined,
+    });
+  }
+
+  private _onTabFieldsChanged(index: number, e: CustomEvent): void {
+    e.stopPropagation();
+    const v = (e.detail as any).value ?? {};
+    this._patchTab(index, {
+      name: v.name ?? "",
+      subtitle: v.subtitle || undefined,
+      icon: v.icon || undefined,
+      accent: v.accent || undefined,
+      color: v.color || undefined,
+      badge: v.badge || undefined,
+      badge_color: v.badge_color || undefined,
+      disabled: v.disabled ? true : undefined,
+      card_size: typeof v.card_size === "number" ? v.card_size : undefined,
+      hold_action: v.hold_action ?? undefined,
+      badge_action: v.badge_action ?? undefined,
+      tap_action:
+        v.tap_action && v.tap_action.action !== "none" ? v.tap_action : undefined,
+      enter_action:
+        v.enter_action && v.enter_action.action !== "none" ? v.enter_action : undefined,
+      leave_action:
+        v.leave_action && v.leave_action.action !== "none" ? v.leave_action : undefined,
+    });
+  }
+
+  // A collapsible condition-list editor for one of a tab's condition keys.
+  // Uses HA's own ha-card-conditions-editor (the one behind a card's
+  // Visibility tab) — tabdeck-only condition types such as `template` show as
+  // editable YAML inside it. Falls back to ha-yaml-editor, then JSON.
+  private _renderConditions(index: number, tab: any, sec: ConditionSection) {
+    const conditions: any[] = Array.isArray(tab[sec.key]) ? tab[sec.key] : [];
+    const onChange = (e: CustomEvent) => {
+      e.stopPropagation();
+      const value = (e.detail as any)?.value;
+      if ((e.detail as any)?.isValid === false || !Array.isArray(value)) return;
+      this._patchTab(index, { [sec.key]: value.length ? value : undefined });
+    };
+    let body;
+    if (customElements.get("ha-card-conditions-editor")) {
+      body = html`<ha-card-conditions-editor
+        .hass=${this.hass}
+        .conditions=${conditions}
+        @value-changed=${onChange}
+      ></ha-card-conditions-editor>`;
+    } else if (customElements.get("ha-yaml-editor")) {
+      body = html`<ha-yaml-editor
+        .defaultValue=${conditions}
+        @value-changed=${onChange}
+      ></ha-yaml-editor>`;
+    } else {
+      body = html`<textarea
+        class="conditions-json"
+        rows="6"
+        .value=${JSON.stringify(conditions, null, 2)}
+        @change=${(e: any) => {
+          try {
+            const value = JSON.parse(e.target.value || "[]");
+            if (Array.isArray(value)) {
+              this._patchTab(index, { [sec.key]: value.length ? value : undefined });
+            }
+          } catch {
+            /* keep typing */
+          }
+        }}
+      ></textarea>`;
+    }
+    return html`
+      <details class="conditions-section" data-key=${sec.key}>
+        <summary>
+          ${sec.label}${conditions.length ? ` (${conditions.length})` : ""}
+          <span class="conditions-hint">${sec.hint}</span>
+        </summary>
+        ${body}
+      </details>
+    `;
+  }
+
+  // HA lazy-loads its conditions editor with the conditional card's editor;
+  // pull it in so the builder is available even if nothing else loaded it.
+  private async _ensureConditionsEditor(): Promise<void> {
+    if (customElements.get("ha-card-conditions-editor")) return;
+    try {
+      const helpers = await (window as any).loadCardHelpers?.();
+      helpers?.createCardElement?.({ type: "conditional", conditions: [], card: { type: "markdown" } });
+      const ctor: any = customElements.get("hui-conditional-card");
+      await ctor?.getConfigElement?.();
+      if (customElements.get("ha-card-conditions-editor")) this.requestUpdate();
+    } catch {
+      /* fallback editors are used */
+    }
+  }
+
+  protected firstUpdated(): void {
+    void this._ensureConditionsEditor();
+  }
+
+  private _computeGlobalLabel = (s: { name: string }) => GLOBAL_LABELS[s.name] ?? s.name;
+  private _computeTabLabel = (s: { name: string }) => TAB_LABELS[s.name] ?? s.name;
+
+  render() {
+    if (!this._config) return html``;
+    if (this._editingTab !== null) return this._renderCardView(this._editingTab);
+    return this._renderListView();
+  }
+
+  private _renderCardView(index: number) {
+    const tab = this._config!.tabs[index];
+    if (!tab) {
+      // Tab vanished (e.g. deleted elsewhere) — bail back to the list.
+      this._editingTab = null;
+      return this._renderListView();
+    }
+    const hasType = !!tab.card?.type;
+    return html`
+      <div class="card-editor-view">
+        <div class="card-editor-header">
+          <button class="back-to-list" @click=${this._closeCard}>← Back</button>
+          <span class="card-editor-title">${tab.name || `Tab ${index + 1}`}</span>
+          ${hasType
+            ? html`<button class="change-card-type" @click=${() => this._changeCardType(index)}>
+                Change card type
+              </button>`
+            : nothing}
+        </div>
+        ${hasType
+          ? this._renderCardEditor(index, tab)
+          : this._renderCardTypeChooser(index)}
+      </div>
+    `;
+  }
+
+  private _renderCardTypeChooser(index: number) {
+    return html`
+      <div class="card-type-chooser">
+        <ha-form
+          class="card-type-form"
+          .hass=${this.hass}
+          .data=${{}}
+          .schema=${CARD_TYPE_SCHEMA}
+          .computeLabel=${() => "Card type"}
+          @value-changed=${(e: CustomEvent) => this._onTypeChosen(index, e)}
+        ></ha-form>
+        <p class="card-type-hint">
+          Choose a card type to configure it. Enter a custom type (e.g.
+          <code>custom:my-card</code>) for cards not in the list.
+        </p>
+      </div>
+    `;
+  }
+
+  private _renderCardEditor(index: number, tab: any) {
+    const tag = pickCardEditorTag((t) => !!customElements.get(t));
+    if (tag === "hui-card-element-editor") {
+      return html`
+        <hui-card-element-editor
+          .hass=${this.hass}
+          .lovelace=${this._lovelace}
+          .value=${tab.card ?? {}}
+          @config-changed=${(e: CustomEvent) => this._onNativeCardChanged(index, e)}
+        ></hui-card-element-editor>
+      `;
+    }
+    if (tag === "ha-yaml-editor") {
+      return html`
+        <ha-yaml-editor
+          .defaultValue=${tab.card ?? {}}
+          @value-changed=${(e: CustomEvent) => this._onYamlCardChanged(index, e)}
+        ></ha-yaml-editor>
+      `;
+    }
+    return html`
+      <label class="card-label"
+        >Card (JSON)
+        <textarea
+          class="tab-card-json"
+          rows="10"
+          .value=${JSON.stringify(tab.card ?? {}, null, 2)}
+          @change=${(e: any) => this._editCardJson(index, e.target.value)}
+        ></textarea>
+      </label>
+      ${this._cardError === index
+        ? html`<div class="tab-card-error">Invalid JSON — not saved.</div>`
+        : nothing}
+    `;
+  }
+
+  private _renderListView() {
+    const cfg = this._config!;
+    return html`
+      <div class="editor">
+        <div class="preview" aria-hidden="true">
+          <tabdeck-tabbar
+            class="preview-bar"
+            .items=${cfg.tabs.map((t, i) => ({
+              // Templated fields only render on the live card; preview plain ones.
+              name: (!isTemplate(t.name) && t.name) || `Tab ${i + 1}`,
+              icon: isTemplate(t.icon) ? undefined : t.icon,
+              accent: isTemplate(t.accent) ? undefined : t.accent,
+              color: isTemplate(t.color) ? undefined : t.color,
+              disabled: t.disabled,
+            }))}
+            .selected=${0}
+            .position=${"top"}
+            .tabStyle=${cfg.style}
+            .display=${cfg.tab_display}
+            .align=${cfg.align}
+            .indicatorSize=${cfg.indicator_size}
+            .indicatorRadius=${cfg.indicator_radius}
+            .accentIndicator=${cfg.accent_indicator}
+          ></tabdeck-tabbar>
+        </div>
+
+        <ha-form
+          class="globals-form"
+          .hass=${this.hass}
+          .data=${this._globalData}
+          .schema=${this._globalSchema()}
+          .computeLabel=${this._computeGlobalLabel}
+          @value-changed=${this._onGlobalChanged}
+        ></ha-form>
+
+        ${this._warnings().map(
+          (w) => html`<div class="editor-warning" role="alert">⚠️ ${w}</div>`,
+        )}
+
+        ${cfg.tabs.length > 1
+          ? html`<div class="bulk-controls">
+              <button class="expand-all" @click=${this._expandAll}>Expand all</button>
+              <button class="collapse-all" @click=${this._collapseAll}>Collapse all</button>
+            </div>`
+          : nothing}
+
+        <ha-sortable
+          handle-selector=".drag-handle"
+          @item-moved=${this._onItemMoved}
+        >
+        <div class="tabs">
+          ${cfg.tabs.map((tab, index) => {
+            const expanded = this._expanded.has(index);
+            return html`
+              <div class="tab ${expanded ? "expanded" : "collapsed"}">
+                <div
+                  class="tab-header"
+                  role="button"
+                  tabindex="0"
+                  aria-expanded=${expanded ? "true" : "false"}
+                  @click=${() => this._toggleExpanded(index)}
+                  @keydown=${(e: KeyboardEvent) => this._onHeaderKeydown(index, e)}
+                >
+                  <div class="tab-summary">
+                    <ha-svg-icon
+                      class="drag-handle"
+                      .path=${MDI_DRAG}
+                      title="Drag to reorder"
+                      @click=${(e: Event) => e.stopPropagation()}
+                    ></ha-svg-icon>
+                    <ha-svg-icon
+                      class="expand-chevron"
+                      .path=${MDI_CHEVRON_DOWN}
+                    ></ha-svg-icon>
+                    <ha-icon
+                      class="tab-icon"
+                      .icon=${(!isTemplate(tab.icon) && tab.icon) || DEFAULT_TAB_ICON}
+                    ></ha-icon>
+                    <span class="tab-title">${tab.name || `Tab ${index + 1}`}</span>
+                    <span class="tab-type">${tab.card?.type ?? "—"}</span>
+                  </div>
+                  <div class="tab-controls">
+                    <ha-icon-button
+                      class="move-up"
+                      label="Move up"
+                      .path=${MDI_ARROW_UP}
+                      .disabled=${index === 0}
+                      @click=${(e: Event) => {
+                        e.stopPropagation();
+                        this._move(index, -1);
+                      }}
+                    ></ha-icon-button>
+                    <ha-icon-button
+                      class="move-down"
+                      label="Move down"
+                      .path=${MDI_ARROW_DOWN}
+                      .disabled=${index === cfg.tabs.length - 1}
+                      @click=${(e: Event) => {
+                        e.stopPropagation();
+                        this._move(index, 1);
+                      }}
+                    ></ha-icon-button>
+                    <ha-icon-button
+                      class="copy-tab"
+                      label="Copy tab"
+                      .path=${MDI_EXPORT}
+                      @click=${(e: Event) => {
+                        e.stopPropagation();
+                        void this._copyTab(index);
+                      }}
+                    ></ha-icon-button>
+                    <ha-icon-button
+                      class="duplicate-tab"
+                      label="Duplicate tab"
+                      .path=${MDI_COPY}
+                      @click=${(e: Event) => {
+                        e.stopPropagation();
+                        this._duplicateTab(index);
+                      }}
+                    ></ha-icon-button>
+                    <ha-icon-button
+                      class="delete-tab"
+                      label="Delete tab"
+                      .path=${MDI_DELETE}
+                      @click=${(e: Event) => {
+                        e.stopPropagation();
+                        this._deleteTab(index);
+                      }}
+                    ></ha-icon-button>
+                  </div>
+                </div>
+                ${expanded
+                  ? html`
+                      <ha-form
+                        class="tab-form"
+                        .hass=${this.hass}
+                        .data=${{
+                          name: tab.name ?? "",
+                          subtitle: tab.subtitle ?? "",
+                          icon: tab.icon ?? "",
+                          accent: tab.accent ?? "",
+                          color: tab.color ?? "",
+                          badge: tab.badge ?? "",
+                          badge_color: tab.badge_color ?? "",
+                          disabled: !!tab.disabled,
+                          card_size: tab.card_size,
+                          hold_action: tab.hold_action,
+                          badge_action: tab.badge_action,
+                          tap_action: tab.tap_action,
+                          enter_action: tab.enter_action,
+                          leave_action: tab.leave_action,
+                        }}
+                        .schema=${TAB_SCHEMA}
+                        .computeLabel=${this._computeTabLabel}
+                        @value-changed=${(e: CustomEvent) =>
+                          this._onTabFieldsChanged(index, e)}
+                      ></ha-form>
+                      ${CONDITION_SECTIONS.map((sec) => this._renderConditions(index, tab, sec))}
+                      <button class="edit-card" @click=${() => this._openCard(index)}>
+                        <span class="edit-card-label">Edit card</span>
+                        <span class="edit-card-type">${tab.card?.type ?? "—"}</span>
+                        <span class="edit-card-arrow">→</span>
+                      </button>
+                    `
+                  : nothing}
+              </div>
+            `;
+          })}
+        </div>
+        </ha-sortable>
+        <!-- Icons go in both slots: "start" (current WebAwesome ha-button) and
+             "icon" (older builds); the unused slot's copy isn't rendered. -->
+        <div class="add-row">
+          <ha-button class="add-tab" @click=${this._addTab}>
+            <ha-svg-icon slot="start" .path=${MDI_PLUS}></ha-svg-icon>
+            <ha-svg-icon slot="icon" .path=${MDI_PLUS}></ha-svg-icon>
+            Add tab
+          </ha-button>
+          <ha-button class="import-tab" @click=${this._toggleImport}>
+            <ha-svg-icon slot="start" .path=${MDI_IMPORT}></ha-svg-icon>
+            <ha-svg-icon slot="icon" .path=${MDI_IMPORT}></ha-svg-icon>
+            Import tab
+          </ha-button>
+        </div>
+        ${this._importOpen ? this._renderImport() : nothing}
+        ${this._status ? html`<div class="editor-status" role="status">${this._status}</div>` : nothing}
+      </div>
+    `;
+  }
+
+  static styles = css`
+    .add-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .import-panel {
+      margin-top: 8px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .import-hint {
+      font-size: 13px;
+      color: var(--secondary-text-color);
+      margin-bottom: 8px;
+    }
+    textarea.import-json {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: var(--code-font-family, monospace);
+    }
+    .import-error {
+      color: var(--error-color, #db4437);
+      font-size: 13px;
+      margin-top: 6px;
+    }
+    .import-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .editor-status {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--secondary-text-color);
+    }
+    .conditions-section {
+      margin: 8px 0;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: 8px;
+      padding: 6px 10px;
+    }
+    .conditions-section summary {
+      cursor: pointer;
+      font-weight: 500;
+      padding: 4px 0;
+    }
+    .conditions-hint {
+      font-weight: 400;
+      font-size: 12px;
+      color: var(--secondary-text-color);
+      margin-left: 6px;
+    }
+    .conditions-section[open] summary {
+      margin-bottom: 8px;
+    }
+    textarea.conditions-json {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: var(--code-font-family, monospace);
+    }
+    .editor {
+      display: flex;
+      flex-direction: column;
+      gap: 24px;
+    }
+    .globals-form {
+      display: block;
+    }
+    .preview {
+      border: 1px dashed var(--divider-color, #e0e0e0);
+      border-radius: var(--ha-card-border-radius, 12px);
+      padding: 8px;
+      pointer-events: none;
+    }
+    .preview::before {
+      content: "Preview";
+      display: block;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--secondary-text-color);
+      margin-bottom: 6px;
+    }
+    .tabs {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .tab {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding: 16px;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: var(--ha-card-border-radius, 12px);
+      background: var(--card-background-color, var(--ha-card-background));
+    }
+    .tab-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      padding: 4px;
+      margin: -4px;
+      border-radius: 8px;
+      user-select: none;
+    }
+    .tab-header:hover {
+      background: var(--secondary-background-color, #f5f5f5);
+    }
+    .tab-header:focus-visible {
+      outline: 2px solid var(--primary-color);
+      outline-offset: 0;
+    }
+    .tab-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .drag-handle {
+      flex-shrink: 0;
+      color: var(--secondary-text-color);
+      cursor: grab;
+    }
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+    .editor-warning {
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--warning-color, #ffa600) 18%, transparent);
+      color: var(--primary-text-color);
+      font-size: 13px;
+    }
+    .expand-chevron {
+      flex-shrink: 0;
+      color: var(--secondary-text-color);
+      transition: transform 0.2s ease;
+    }
+    .tab.expanded .expand-chevron {
+      transform: rotate(180deg);
+    }
+    .tab-icon {
+      flex-shrink: 0;
+      color: var(--secondary-text-color);
+    }
+    .tab-title {
+      font-weight: 500;
+      font-size: 15px;
+      color: var(--primary-text-color);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tab-type {
+      flex-shrink: 0;
+      color: var(--secondary-text-color);
+      font-family: var(--code-font-family, monospace);
+      font-size: 12px;
+    }
+    .tab-controls {
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+      --mdc-icon-button-size: 40px;
+    }
+    .delete-tab {
+      color: var(--error-color, #db4437);
+    }
+    .edit-card {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      color: var(--primary-text-color);
+      background: var(--secondary-background-color, #f5f5f5);
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: var(--ha-card-border-radius, 12px);
+      font-size: 14px;
+      text-align: left;
+    }
+    .edit-card:hover {
+      background: var(--divider-color, #e0e0e0);
+    }
+    .edit-card-type {
+      color: var(--secondary-text-color);
+      font-family: var(--code-font-family, monospace);
+      font-size: 12px;
+    }
+    .edit-card-arrow {
+      margin-left: auto;
+      color: var(--secondary-text-color);
+    }
+    .add-tab {
+      align-self: flex-start;
+    }
+    .bulk-controls {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .bulk-controls button {
+      background: none;
+      border: none;
+      color: var(--primary-color);
+      font-size: 13px;
+      padding: 4px 6px;
+    }
+    .card-editor-view {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .card-editor-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .card-editor-title {
+      font-weight: 500;
+    }
+    .back-to-list,
+    .change-card-type {
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 12px;
+      color: var(--primary-text-color);
+      background: none;
+      border: 1px solid var(--divider-color, #e0e0e0);
+      border-radius: var(--ha-card-border-radius, 12px);
+      font-size: 14px;
+    }
+    .change-card-type {
+      margin-left: auto;
+      color: var(--primary-color);
+    }
+    .card-type-chooser {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .card-type-hint {
+      margin: 0;
+      font-size: 12px;
+      color: var(--secondary-text-color);
+    }
+    .card-type-hint code {
+      font-family: var(--code-font-family, monospace);
+    }
+    .card-label {
+      font-size: 12px;
+      gap: 4px;
+    }
+    .tab-card-json {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: var(--code-font-family, monospace);
+      font-size: 12px;
+    }
+    .tab-card-error {
+      color: var(--error-color, #b00020);
+      font-size: 12px;
+    }
+    button {
+      cursor: pointer;
+    }
+  `;
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    "tabdeck-card-editor": TabdeckCardEditor;
+  }
+}

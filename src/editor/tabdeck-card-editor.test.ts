@@ -1,0 +1,531 @@
+import { describe, it, expect, vi, beforeAll } from "vitest";
+import "./tabdeck-card-editor";
+import { pickCardEditorTag } from "./tabdeck-card-editor";
+
+// In this file the native HA editor element IS available, so the editor should
+// prefer hui-card-element-editor for nested card editing.
+beforeAll(() => {
+  if (!customElements.get("hui-card-element-editor")) {
+    customElements.define(
+      "hui-card-element-editor",
+      class extends HTMLElement {
+        _value: any;
+        _hass: any;
+        _lovelace: any;
+        set value(v: any) {
+          this._value = v;
+        }
+        get value() {
+          return this._value;
+        }
+        set hass(h: any) {
+          this._hass = h;
+        }
+        set lovelace(l: any) {
+          this._lovelace = l;
+        }
+      },
+    );
+  }
+});
+
+async function mount(config: any) {
+  const el = document.createElement("tabdeck-card-editor") as any;
+  el.hass = { states: {} };
+  el.setConfig(config);
+  document.body.appendChild(el);
+  await el.updateComplete;
+  return el;
+}
+
+// Tab cards are collapsed by default; click a tab's header to reveal its fields.
+async function expand(el: any, index = 0) {
+  el.shadowRoot.querySelectorAll(".tab-header")[index].click();
+  await el.updateComplete;
+}
+
+// ha-form is not registered in jsdom, so we drive it the way HA does: by firing
+// a value-changed carrying the full (merged) data object.
+function formChange(form: any, value: any) {
+  form.dispatchEvent(
+    new CustomEvent("value-changed", { detail: { value }, bubbles: true, composed: true }),
+  );
+}
+
+// The globals ha-form's current data for a default single-tab config; spread and
+// override one field to simulate editing just that field.
+function globalsData() {
+  return {
+    position: "top",
+    style: "underline",
+    tab_display: "both",
+    align: "start",
+    badge_display: "text",
+    hide_inactive_badge: false,
+    transition: "none",
+    indicator_size: 3,
+    indicator_radius: undefined,
+    remember: "none",
+    remember_entity: "",
+    storage_key: "",
+    default_tab: "A",
+    scrollable: "auto",
+    lazy: false,
+    unmount_hidden: false,
+    swipe_wrap: false,
+    animated: true,
+    accent_indicator: true,
+    header: false,
+    aria_label: "",
+    sticky: false,
+    elevation: false,
+    scroll_buttons: false,
+    overflow_menu: false,
+    bar_background: "",
+    swipe: false,
+    swipe_mouse: false,
+  };
+}
+
+describe("pickCardEditorTag", () => {
+  it("prefers hui-card-element-editor when available", () => {
+    expect(pickCardEditorTag((t) => t === "hui-card-element-editor")).toBe(
+      "hui-card-element-editor",
+    );
+  });
+
+  it("falls back to ha-yaml-editor when the native editor is missing", () => {
+    expect(pickCardEditorTag((t) => t === "ha-yaml-editor")).toBe("ha-yaml-editor");
+  });
+
+  it("falls back to a JSON textarea when neither element exists", () => {
+    expect(pickCardEditorTag(() => false)).toBe("textarea-json");
+  });
+});
+
+describe("tabdeck-card-editor", () => {
+  it("renders one block per tab", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }, { name: "B", card: {} }] });
+    expect(el.shadowRoot.querySelectorAll(".tab")).toHaveLength(2);
+  });
+
+  it("shows a live tab-bar preview reflecting the tabs and style", async () => {
+    const el = await mount({ style: "pill", tabs: [{ name: "A", card: {} }, { name: "B", card: {} }] });
+    const preview = el.shadowRoot.querySelector(".preview tabdeck-tabbar") as any;
+    expect(preview).toBeTruthy();
+    expect(preview.items.map((i: any) => i.name)).toEqual(["A", "B"]);
+    expect(preview.tabStyle).toBe("pill");
+  });
+
+  it("collapses every tab by default, hiding its fields and Edit card", async () => {
+    const el = await mount({
+      tabs: [{ name: "A", card: { type: "markdown" } }, { name: "B", card: { type: "light" } }],
+    });
+    // headers (with controls) are always present...
+    expect(el.shadowRoot.querySelectorAll(".tab-header")).toHaveLength(2);
+    expect(el.shadowRoot.querySelectorAll(".tab.collapsed")).toHaveLength(2);
+    // ...but the fields and Edit card are not rendered while collapsed.
+    expect(el.shadowRoot.querySelector(".tab-form")).toBeNull();
+    expect(el.shadowRoot.querySelector(".edit-card")).toBeNull();
+  });
+
+  it("expanding a tab via its header reveals the fields and Edit card", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    expect(el.shadowRoot.querySelector(".tab-form")).toBeNull();
+    await expand(el, 0);
+    expect(el.shadowRoot.querySelector(".tab.expanded")).toBeTruthy();
+    expect(el.shadowRoot.querySelector(".tab-form")).toBeTruthy();
+    expect(el.shadowRoot.querySelector(".edit-card")).toBeTruthy();
+    expect(el.shadowRoot.querySelector(".tab-header").getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("toggling the header again collapses the tab", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    await expand(el, 0);
+    expect(el.shadowRoot.querySelector(".tab-form")).toBeTruthy();
+    await expand(el, 0);
+    expect(el.shadowRoot.querySelector(".tab-form")).toBeNull();
+    expect(el.shadowRoot.querySelector(".tab-header").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("shows the tab's card type in the collapsed header summary", async () => {
+    const el = await mount({ tabs: [{ name: "Weather", card: { type: "weather-forecast" } }] });
+    expect(el.shadowRoot.querySelector(".tab-type").textContent).toContain("weather-forecast");
+    expect(el.shadowRoot.querySelector(".tab-title").textContent).toContain("Weather");
+  });
+
+  it("auto-expands a newly added tab", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    el.shadowRoot.querySelector(".add-tab").click();
+    await el.updateComplete;
+    // two tabs now; the new (second) one should be expanded -> its form visible
+    expect(el.shadowRoot.querySelectorAll(".tab.expanded")).toHaveLength(1);
+    expect(el.shadowRoot.querySelectorAll(".tab")[1].classList.contains("expanded")).toBe(true);
+  });
+
+  it("expand all / collapse all toggles every tab", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }, { name: "B", card: {} }, { name: "C", card: {} }] });
+    expect(el.shadowRoot.querySelectorAll(".tab.expanded")).toHaveLength(0);
+    el.shadowRoot.querySelector(".expand-all").click();
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelectorAll(".tab.expanded")).toHaveLength(3);
+    el.shadowRoot.querySelector(".collapse-all").click();
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelectorAll(".tab.expanded")).toHaveLength(0);
+  });
+
+  it("collapses all tabs after a reorder so no stale index is expanded", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }, { name: "B", card: {} }] });
+    await expand(el, 0);
+    expect(el.shadowRoot.querySelector(".tab.expanded")).toBeTruthy();
+    el.shadowRoot.querySelectorAll(".move-down")[0].click();
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelector(".tab.expanded")).toBeNull();
+  });
+
+  it("fires config-changed when adding a tab", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot.querySelector(".add-tab").click();
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].detail.config.tabs).toHaveLength(2);
+  });
+
+  it("fires config-changed when deleting a tab", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }, { name: "B", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot.querySelectorAll(".delete-tab")[0].click();
+    expect(handler.mock.calls[0][0].detail.config.tabs).toHaveLength(1);
+    expect(handler.mock.calls[0][0].detail.config.tabs[0].name).toBe("B");
+  });
+
+  it("duplicates a tab right after the original with a renamed copy", async () => {
+    const el = await mount({
+      tabs: [{ name: "A", card: { type: "markdown", content: "hi" } }, { name: "B", card: {} }],
+    });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot.querySelectorAll(".duplicate-tab")[0].click();
+    const tabs = handler.mock.calls.at(-1)![0].detail.config.tabs;
+    expect(tabs).toHaveLength(3);
+    expect(tabs[1].name).toBe("A copy");
+    expect(tabs[1].card).toEqual({ type: "markdown", content: "hi" });
+    expect(tabs[2].name).toBe("B");
+  });
+
+  it("reorders tabs on ha-sortable item-moved", async () => {
+    const el = await mount({
+      tabs: [{ name: "A", card: {} }, { name: "B", card: {} }, { name: "C", card: {} }],
+    });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot
+      .querySelector("ha-sortable")
+      .dispatchEvent(new CustomEvent("item-moved", { detail: { oldIndex: 0, newIndex: 2 } }));
+    const names = handler.mock.calls.at(-1)![0].detail.config.tabs.map((t: any) => t.name);
+    expect(names).toEqual(["B", "C", "A"]);
+  });
+
+  it("warns about duplicate tab names", async () => {
+    const el = await mount({ tabs: [{ name: "Dup", card: {} }, { name: "Dup", card: {} }] });
+    const warn = el.shadowRoot.querySelector(".editor-warning");
+    expect(warn?.textContent).toContain("Duplicate tab names");
+    const ok = await mount({ tabs: [{ name: "A", card: {} }, { name: "B", card: {} }] });
+    expect(ok.shadowRoot.querySelector(".editor-warning")).toBeNull();
+  });
+
+  it("moves a tab down", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }, { name: "B", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot.querySelectorAll(".move-down")[0].click();
+    expect(handler.mock.calls[0][0].detail.config.tabs[0].name).toBe("B");
+  });
+
+  it("edits a tab's accent and badge via its ha-form", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+
+    await expand(el, 0);
+    const form = el.shadowRoot.querySelector(".tab-form");
+    formChange(form, { name: "A", icon: "", accent: "#ff0000", badge: "" });
+    expect(handler.mock.calls.at(-1)![0].detail.config.tabs[0].accent).toBe("#ff0000");
+
+    formChange(form, { name: "A", icon: "", accent: "#ff0000", badge: "sensor.unread" });
+    expect(handler.mock.calls.at(-1)![0].detail.config.tabs[0].badge).toBe("sensor.unread");
+  });
+
+  it("shows an 'Edit card' button per tab and no raw JSON textarea in list view", async () => {
+    const el = await mount({
+      tabs: [{ name: "A", card: { type: "markdown" } }, { name: "B", card: { type: "light" } }],
+    });
+    await expand(el, 0);
+    await expand(el, 1);
+    expect(el.shadowRoot.querySelectorAll(".edit-card")).toHaveLength(2);
+    expect(el.shadowRoot.querySelector(".tab-card-json")).toBeNull();
+    expect(el.shadowRoot.querySelector("hui-card-element-editor")).toBeNull();
+  });
+
+  it("drills into the native card editor with the tab's card as its value", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown", content: "hi" } }] });
+    await expand(el, 0);
+    el.shadowRoot.querySelector(".edit-card").click();
+    await el.updateComplete;
+    // tab list is hidden while editing a card
+    expect(el.shadowRoot.querySelector(".tabs")).toBeNull();
+    const inner = el.shadowRoot.querySelector("hui-card-element-editor") as any;
+    expect(inner).toBeTruthy();
+    expect(inner.value).toEqual({ type: "markdown", content: "hi" });
+    expect(inner._hass).toEqual({ states: {} });
+    expect(inner._lovelace).toBeTruthy();
+  });
+
+  it("patches the tab card and re-emits the full config on the inner editor's config-changed", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    await expand(el, 0);
+    el.shadowRoot.querySelector(".edit-card").click();
+    await el.updateComplete;
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const inner = el.shadowRoot.querySelector("hui-card-element-editor") as any;
+    inner.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: { type: "light", entity: "light.kitchen" } },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    expect(handler).toHaveBeenCalledTimes(1);
+    const cfg = handler.mock.calls.at(-1)![0].detail.config;
+    // full tabdeck config is emitted, not the bare card config
+    expect(cfg.tabs).toHaveLength(1);
+    expect(cfg.tabs[0].card).toEqual({ type: "light", entity: "light.kitchen" });
+  });
+
+  it("adds a tab with no card type so the picker can choose one", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot.querySelector(".add-tab").click();
+    const cfg = handler.mock.calls.at(-1)![0].detail.config;
+    expect(cfg.tabs[1].card.type).toBeUndefined();
+  });
+
+  it("shows a card-type chooser for a typeless card and sets the chosen type", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    await expand(el, 0);
+    el.shadowRoot.querySelector(".edit-card").click();
+    await el.updateComplete;
+    const chooser = el.shadowRoot.querySelector(".card-type-form");
+    expect(chooser).toBeTruthy();
+    expect(el.shadowRoot.querySelector("hui-card-element-editor")).toBeNull();
+
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    chooser.dispatchEvent(
+      new CustomEvent("value-changed", {
+        detail: { value: { type: "light" } },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    expect(handler.mock.calls.at(-1)![0].detail.config.tabs[0].card).toEqual({ type: "light" });
+  });
+
+  it("offers popular custom-card presets in the card-type chooser", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    await expand(el, 0);
+    el.shadowRoot.querySelector(".edit-card").click();
+    await el.updateComplete;
+    const form = el.shadowRoot.querySelector(".card-type-form") as any;
+    const values = form.schema[0].selector.select.options.map((o: any) => o.value);
+    expect(values).toContain("custom:button-card");
+    expect(values).toContain("custom:mushroom-template-card");
+    expect(form.schema[0].selector.select.custom_value).toBe(true);
+  });
+
+  it("'Change card type' resets the card so the chooser reappears", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown", content: "hi" } }] });
+    await expand(el, 0);
+    el.shadowRoot.querySelector(".edit-card").click();
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelector("hui-card-element-editor")).toBeTruthy();
+    const btn = el.shadowRoot.querySelector(".change-card-type") as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    btn.click();
+    expect(handler.mock.calls.at(-1)![0].detail.config.tabs[0].card).toEqual({});
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelector(".card-type-form")).toBeTruthy();
+    expect(el.shadowRoot.querySelector("hui-card-element-editor")).toBeNull();
+  });
+
+  it("returns to the tab list when Back is pressed", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    await expand(el, 0);
+    el.shadowRoot.querySelector(".edit-card").click();
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelector(".back-to-list")).toBeTruthy();
+    el.shadowRoot.querySelector(".back-to-list").click();
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelector(".tabs")).toBeTruthy();
+    expect(el.shadowRoot.querySelector("hui-card-element-editor")).toBeNull();
+  });
+
+  it("changes the global default_tab via the globals ha-form", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }, { name: "B", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const form = el.shadowRoot.querySelector(".globals-form");
+    formChange(form, { ...globalsData(), default_tab: "B" });
+    expect(handler.mock.calls.at(-1)![0].detail.config.default_tab).toBe("B");
+  });
+
+  it("toggles the global animated option via the globals ha-form", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const form = el.shadowRoot.querySelector(".globals-form");
+    formChange(form, { ...globalsData(), animated: false });
+    expect(handler.mock.calls.at(-1)![0].detail.config.animated).toBe(false);
+  });
+
+  it("toggles the global lazy option via the globals ha-form", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const form = el.shadowRoot.querySelector(".globals-form");
+    formChange(form, { ...globalsData(), lazy: true });
+    expect(handler.mock.calls.at(-1)![0].detail.config.lazy).toBe(true);
+  });
+
+  it("maps the scrollable string back to a boolean/auto", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const form = el.shadowRoot.querySelector(".globals-form");
+    formChange(form, { ...globalsData(), scrollable: "false" });
+    expect(handler.mock.calls.at(-1)![0].detail.config.scrollable).toBe(false);
+    formChange(form, { ...globalsData(), scrollable: "auto" });
+    expect(handler.mock.calls.at(-1)![0].detail.config.scrollable).toBe("auto");
+  });
+
+  it("maps auto_rotate seconds to an object, keeping resume_after", async () => {
+    const el = await mount({ auto_rotate: { interval: 10, resume_after: 30 }, tabs: [{ name: "A", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const form = el.shadowRoot.querySelector(".globals-form");
+    formChange(form, { ...globalsData(), auto_rotate: 15, idle_return: 90 });
+    const cfg = handler.mock.calls.at(-1)![0].detail.config;
+    expect(cfg.auto_rotate).toEqual({ interval: 15, resume_after: 30 });
+    expect(cfg.idle_return).toBe(90);
+    formChange(form, { ...globalsData(), auto_rotate: 0, idle_return: 0 });
+    const off = handler.mock.calls.at(-1)![0].detail.config;
+    expect(off.auto_rotate).toBeUndefined();
+    expect(off.idle_return).toBeUndefined();
+  });
+
+  it("choosing a preset writes its values into the config", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const form = el.shadowRoot.querySelector(".globals-form");
+    formChange(form, { ...globalsData(), preset: "ios" });
+    const cfg = handler.mock.calls.at(-1)![0].detail.config;
+    expect(cfg.preset).toBe("ios");
+    expect(cfg.style).toBe("segmented");
+    expect(cfg.align).toBe("justify");
+  });
+
+  it("edits visibility / alert / default_if with HA's conditions editor", async () => {
+    if (!customElements.get("ha-card-conditions-editor")) {
+      customElements.define(
+        "ha-card-conditions-editor",
+        class extends HTMLElement {
+          conditions: any;
+          hass: any;
+        },
+      );
+    }
+    const cond = [{ condition: "state", entity: "light.a", state: "on" }];
+    const el = await mount({ tabs: [{ name: "A", card: {}, visibility: cond }] });
+    await expand(el, 0);
+    const sections = [...el.shadowRoot.querySelectorAll(".conditions-section")];
+    expect(sections.map((s: any) => s.dataset.key)).toEqual(["visibility", "alert", "default_if"]);
+    expect(sections[0].querySelector("summary").textContent).toContain("(1)");
+    const ed = sections[0].querySelector("ha-card-conditions-editor");
+    expect(ed.conditions).toEqual(cond);
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    const next = [...cond, { condition: "screen", media_query: "(min-width: 600px)" }];
+    ed.dispatchEvent(new CustomEvent("value-changed", { detail: { value: next }, bubbles: true, composed: true }));
+    expect(handler.mock.calls.at(-1)![0].detail.config.tabs[0].visibility).toEqual(next);
+    // Clearing all conditions removes the key.
+    const alertEd = sections[1].querySelector("ha-card-conditions-editor");
+    alertEd.dispatchEvent(new CustomEvent("value-changed", { detail: { value: [] }, bubbles: true, composed: true }));
+    expect(handler.mock.calls.at(-1)![0].detail.config.tabs[0].alert).toBeUndefined();
+  });
+
+  it("copies a tab's config to the clipboard", async () => {
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: async (t: string) => void written.push(t) },
+      configurable: true,
+    });
+    const el = await mount({ tabs: [{ name: "Lights", icon: "mdi:lightbulb", card: { type: "light", entity: "light.a" } }] });
+    el.shadowRoot.querySelector(".copy-tab").click();
+    await new Promise((r) => setTimeout(r, 0));
+    await el.updateComplete;
+    const copied = JSON.parse(written[0]);
+    expect(copied).toEqual({ name: "Lights", icon: "mdi:lightbulb", card: { type: "light", entity: "light.a" } });
+    expect(el.shadowRoot.querySelector(".editor-status").textContent).toContain("Lights");
+  });
+
+  it("imports one or several tabs from pasted config", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot.querySelector(".import-tab").click();
+    await el.updateComplete;
+    const ta = el.shadowRoot.querySelector("textarea.import-json");
+    ta.value = JSON.stringify([
+      { name: "B", card: { type: "light" } },
+      { name: "C", tap_action: { action: "navigate", navigation_path: "/c" } },
+    ]);
+    ta.dispatchEvent(new Event("input"));
+    el.shadowRoot.querySelector(".import-apply").click();
+    await el.updateComplete;
+    const tabs = handler.mock.calls.at(-1)![0].detail.config.tabs;
+    expect(tabs.map((t: any) => t.name)).toEqual(["A", "B", "C"]);
+    expect(el.shadowRoot.querySelector("textarea.import-json")).toBeNull();
+  });
+
+  it("rejects pasted config that isn't a tab", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    el.shadowRoot.querySelector(".import-tab").click();
+    await el.updateComplete;
+    const ta = el.shadowRoot.querySelector("textarea.import-json");
+    ta.value = '{"foo": 1}';
+    ta.dispatchEvent(new Event("input"));
+    el.shadowRoot.querySelector(".import-apply").click();
+    await el.updateComplete;
+    expect(handler).not.toHaveBeenCalled();
+    expect(el.shadowRoot.querySelector(".import-error").textContent).toMatch(/tab/i);
+  });
+
+  it("doesn't write a source's generated template back into the config", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: {} }], auto_tabs: { source: "areas", domains: ["light"] } });
+    const handler = vi.fn();
+    el.addEventListener("config-changed", handler);
+    formChange(el.shadowRoot.querySelector(".globals-form"), { ...globalsData(), lazy: true });
+    const cfg = handler.mock.calls.at(-1)![0].detail.config;
+    expect(cfg.auto_tabs).toEqual({ source: "areas", domains: ["light"] });
+  });
+});
