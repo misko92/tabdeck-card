@@ -66,6 +66,7 @@ export class TabdeckTabbar extends LitElement {
 
   private _resizeObserver?: ResizeObserver;
   private _resizeRaf = 0;
+  private _lastSelected = -1;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -78,7 +79,9 @@ export class TabdeckTabbar extends LitElement {
         if (this._resizeRaf) return;
         this._resizeRaf = requestAnimationFrame(() => {
           this._resizeRaf = 0;
-          this._position();
+          // Layout-driven correction (icons/fonts settling, tab widths
+          // changing): snap into place, never slide.
+          this._position(true);
         });
       });
     }
@@ -183,7 +186,7 @@ export class TabdeckTabbar extends LitElement {
   // Measure the selected tab and write the indicator's box inline. Guards for
   // jsdom / pre-layout (offset* == 0) by hiding the indicator instead of moving
   // it to (0,0).
-  private _position(): void {
+  private _position(snap = false): void {
     const root = this.renderRoot as ParentNode | undefined;
     const indicator = root?.querySelector(".indicator") as HTMLElement | null;
     if (!indicator) return;
@@ -210,11 +213,22 @@ export class TabdeckTabbar extends LitElement {
       indicator.style.opacity = "0";
       return;
     }
+    // Only a change of selection should animate. If the selection is the same
+    // as the last measurement (or the caller asked to snap), suppress the
+    // transition for this write.
+    const selectionChanged = this._lastSelected !== this.selected;
+    this._lastSelected = this.selected;
+    const noAnim = snap || !selectionChanged;
+    if (noAnim) indicator.style.transition = "none";
     indicator.style.left = `${rect.left}px`;
     indicator.style.top = `${rect.top}px`;
     indicator.style.width = `${rect.width}px`;
     indicator.style.height = `${rect.height}px`;
     indicator.style.opacity = "1";
+    if (noAnim) {
+      void indicator.offsetWidth; // flush so the write above is not animated
+      indicator.style.transition = "";
+    }
   }
 
   // Push the selected tab's accent onto the host as --tabdeck-accent so the
@@ -266,12 +280,21 @@ export class TabdeckTabbar extends LitElement {
   protected firstUpdated(): void {
     const bar = (this.renderRoot as ParentNode).querySelector(".bar");
     if (bar && this._resizeObserver) this._resizeObserver.observe(bar);
+    // Web fonts finishing late change tab widths without resizing the bar.
+    (document as Document & { fonts?: { ready?: Promise<unknown> } }).fonts?.ready?.then(
+      () => this._position(true),
+    );
   }
 
   protected updated(): void {
     this.setAttribute("aria-label", this.barLabel || "Tabs");
     this._applyAccent();
     this._applySticky();
+    // Tabs can resize on their own (icon upgrade, label change) without the bar
+    // changing size, so watch them too. observe() is idempotent.
+    this.renderRoot
+      .querySelectorAll("tabdeck-tab")
+      .forEach((t) => this._resizeObserver?.observe(t));
     this._position();
     this._updateOverflow();
     if (!this._ready) {
