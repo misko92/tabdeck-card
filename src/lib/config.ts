@@ -128,6 +128,8 @@ export interface TabdeckCardConfig {
   // A deck with a single content tab shows a plain header row (icon, title,
   // chevron) instead of the tab bar; with `collapsible`, tapping it folds the content.
   single_tab_header: boolean;
+  // Remember the folded/unfolded state per device (browser storage).
+  remember_collapsed: boolean;
   // Wide cards: every content tab side by side, no bar.
   split?: SplitConfig;
   // Narrow cards (< narrow_width px): use this tab_display instead.
@@ -322,6 +324,7 @@ export function normalizeConfig(raw: any): TabdeckCardConfig {
     collapsible: Boolean(raw?.collapsible),
     start_collapsed: Boolean(raw?.collapsible && raw?.start_collapsed),
     single_tab_header: Boolean(raw?.single_tab_header),
+    remember_collapsed: Boolean(raw?.collapsible && raw?.remember_collapsed),
     idle_return:
       Number(raw?.idle_return) > 0 ? Math.max(5, Number(raw.idle_return)) : undefined,
   };

@@ -1320,3 +1320,47 @@ describe("tabdeck-card swipe swallow", () => {
     expect(clicked).toBe(true);
   });
 });
+
+describe("tabdeck-card remember_collapsed", () => {
+  const cfg = (extra: any = {}) => ({
+    collapsible: true,
+    remember_collapsed: true,
+    storage_key: "rc-test",
+    tabs: [{ name: "A", card: { type: "markdown" } }],
+    ...extra,
+  });
+  const toggle = (el: any) =>
+    el.shadowRoot
+      .querySelector("tabdeck-tabbar")
+      .dispatchEvent(new CustomEvent("tabdeck-select", { detail: { index: 0 }, bubbles: true, composed: true }));
+
+  it("restores a folded deck even when start_collapsed is off", async () => {
+    localStorage.clear();
+    const first = await mount(cfg());
+    toggle(first); // fold
+    await first.updateComplete;
+    first.remove();
+    const second = await mount(cfg());
+    expect(second.shadowRoot.querySelector(".content").hasAttribute("hidden")).toBe(true);
+  });
+
+  it("a remembered open state beats start_collapsed", async () => {
+    localStorage.clear();
+    const first = await mount(cfg({ start_collapsed: true }));
+    toggle(first); // open
+    await first.updateComplete;
+    first.remove();
+    const second = await mount(cfg({ start_collapsed: true }));
+    expect(second.shadowRoot.querySelector(".content").hasAttribute("hidden")).toBe(false);
+  });
+
+  it("does nothing without remember_collapsed", async () => {
+    localStorage.clear();
+    const first = await mount(cfg({ remember_collapsed: false }));
+    toggle(first);
+    await first.updateComplete;
+    first.remove();
+    const second = await mount(cfg({ remember_collapsed: false }));
+    expect(second.shadowRoot.querySelector(".content").hasAttribute("hidden")).toBe(false);
+  });
+});

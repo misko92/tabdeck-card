@@ -6,6 +6,7 @@ section below as its release notes (see `.github/workflows/release.yml`).
 ## Unreleased
 
 ### Added
+- **`remember_collapsed`** — a `collapsible` deck remembers whether it was folded, per device.
 - **`single_tab_header`** — a one-tab deck shows a header row (icon, title, chevron) instead of the tab bar; with `collapsible`, tapping it folds the content.
 - **`wrap`** — let the tab bar wrap onto several rows instead of scrolling sideways.
 - **`swipe_capture`** (default on) — touch gestures stay inside the card so page-level swipe navigation does not also fire.

@@ -64,6 +64,25 @@ export function loadInitialIndex(opts: {
   return clamp(defaultIndex, tabCount, 0);
 }
 
+// Folded/unfolded state for `collapsible` decks (remember_collapsed). Stored
+// separately from the selected tab; null = nothing remembered yet.
+export function loadCollapsed(cardKey: string, storage?: Storage): boolean | null {
+  try {
+    const raw = (storage ?? globalThis.localStorage)?.getItem(storageKey(cardKey) + ":collapsed");
+    return raw === "1" ? true : raw === "0" ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+export function persistCollapsed(cardKey: string, collapsed: boolean, storage?: Storage): void {
+  try {
+    (storage ?? globalThis.localStorage)?.setItem(storageKey(cardKey) + ":collapsed", collapsed ? "1" : "0");
+  } catch {
+    /* storage unavailable (private mode): fine, just not remembered */
+  }
+}
+
 export function persistIndex(opts: {
   mode: RememberMode;
   cardKey: string;

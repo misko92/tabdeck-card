@@ -12,7 +12,7 @@ import {
 } from "./lib/config";
 import { expandGeneratedTabs } from "./lib/generate";
 import { isTabVisible } from "./lib/conditions";
-import { loadInitialIndex, persistIndex } from "./lib/persistence";
+import { loadCollapsed, loadInitialIndex, persistCollapsed, persistIndex } from "./lib/persistence";
 import { CardManager, getCreateCardElement } from "./lib/card-lifecycle";
 import { isTemplate, TemplateRenderer, type SubscribeFn } from "./lib/templates";
 import { formatBadge } from "./lib/badge";
@@ -79,8 +79,10 @@ export class TabdeckCard extends LitElement {
     this._cardKey = this._computeCardKey(this._config);
     this._built = false;
     this._selected = resolveDefaultIndex(this._config);
-    this._collapsed = this._config.start_collapsed;
-    this._everExpanded = !this._config.start_collapsed;
+    // A remembered fold state (this device) wins over start_collapsed.
+    const remembered = this._config.remember_collapsed ? loadCollapsed(this._cardKey) : null;
+    this._collapsed = remembered ?? this._config.start_collapsed;
+    this._everExpanded = !this._collapsed;
     this._visited = new Set();
     this._autoPrev = undefined;
     this._lastEntityValue = undefined;
@@ -553,12 +555,18 @@ export class TabdeckCard extends LitElement {
       if (e.detail.index === this._selected) {
         this._collapsed = !this._collapsed;
         if (!this._collapsed) this._everExpanded = true;
+        this._saveCollapsed();
         return;
       }
       this._collapsed = false;
       this._everExpanded = true;
+      this._saveCollapsed();
     }
     this._selectIndex(e.detail.index);
+  }
+
+  private _saveCollapsed(): void {
+    if (this._config?.remember_collapsed) persistCollapsed(this._cardKey, this._collapsed);
   }
 
   // --- scroll_spy -----------------------------------------------------------
