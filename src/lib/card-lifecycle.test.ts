@@ -18,6 +18,18 @@ describe("CardManager", () => {
     expect(m.get(0).getAttribute("data-type")).toBe("a");
   });
 
+  it("lazy mode creates elements only on first get", async () => {
+    const create = vi.fn(fakeCreate());
+    const m = new CardManager(create);
+    await m.build([{ type: "a" }, { type: "b" }], true);
+    expect(create).not.toHaveBeenCalled();
+    m.setHass({ states: {} } as any);
+    expect(m.get(1).getAttribute("data-type")).toBe("b");
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(m.get(1).hass).toBeTruthy();
+    expect(m.get(1)).toBe(m.get(1));
+  });
+
   it("fans hass out to every element", async () => {
     const m = new CardManager(fakeCreate());
     await m.build([{ type: "a" }, { type: "b" }]);

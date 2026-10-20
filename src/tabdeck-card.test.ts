@@ -1201,3 +1201,122 @@ describe("per-tab styles", () => {
     expect(el.style.getPropertyValue("--only-a")).toBe("");
   });
 });
+
+describe("tabdeck-card deferred mounting", () => {
+  const tabs = () => ({
+    tabs: [
+      { name: "A", card: { type: "markdown" } },
+      { name: "B", card: { type: "light" } },
+    ],
+  });
+
+  it("start_collapsed creates and mounts no cards until first opened", async () => {
+    const el = await mount({ ...tabs(), collapsible: true, start_collapsed: true });
+    expect(el.shadowRoot.querySelectorAll("[data-type]")).toHaveLength(0);
+    el.shadowRoot
+      .querySelector("tabdeck-tabbar")
+      .dispatchEvent(new CustomEvent("tabdeck-select", { detail: { index: 0 }, bubbles: true, composed: true }));
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelectorAll("[data-type]").length).toBeGreaterThan(0);
+  });
+
+  it("keeps the cards mounted after the deck is folded again", async () => {
+    const el = await mount({ ...tabs(), collapsible: true, start_collapsed: true });
+    const select = () =>
+      el.shadowRoot
+        .querySelector("tabdeck-tabbar")
+        .dispatchEvent(new CustomEvent("tabdeck-select", { detail: { index: 0 }, bubbles: true, composed: true }));
+    select();
+    await el.updateComplete;
+    select();
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelector(".content").hasAttribute("hidden")).toBe(true);
+    expect(el.shadowRoot.querySelectorAll("[data-type]").length).toBeGreaterThan(0);
+  });
+
+  it("lazy mounts only tabs that have been shown", async () => {
+    const el = await mount({ ...tabs(), lazy: true });
+    expect(el.shadowRoot.querySelectorAll("[data-type]")).toHaveLength(1);
+    el.shadowRoot
+      .querySelector("tabdeck-tabbar")
+      .dispatchEvent(new CustomEvent("tabdeck-select", { detail: { index: 1 }, bubbles: true, composed: true }));
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelectorAll("[data-type]")).toHaveLength(2);
+  });
+});
+
+describe("tabdeck-card single_tab_header", () => {
+  const one = (extra: any = {}) => ({
+    single_tab_header: true,
+    collapsible: true,
+    tabs: [{ name: "Recent Activity", icon: "mdi:history", card: { type: "logbook" } }],
+    ...extra,
+  });
+
+  it("renders a header row instead of the tab bar for a single tab", async () => {
+    const el = await mount(one());
+    expect(el.shadowRoot.querySelector("tabdeck-tabbar")).toBeNull();
+    expect(el.shadowRoot.querySelector(".single-title")?.textContent).toContain("Recent Activity");
+  });
+
+  it("toggles the content when the header is clicked", async () => {
+    const el = await mount(one());
+    const content = () => el.shadowRoot.querySelector(".content");
+    expect(content().hasAttribute("hidden")).toBe(false);
+    el.shadowRoot.querySelector(".single-header").click();
+    await el.updateComplete;
+    expect(content().hasAttribute("hidden")).toBe(true);
+    el.shadowRoot.querySelector(".single-header").click();
+    await el.updateComplete;
+    expect(content().hasAttribute("hidden")).toBe(false);
+  });
+
+  it("keeps the normal tab bar when there is more than one tab", async () => {
+    const el = await mount({
+      single_tab_header: true,
+      tabs: [
+        { name: "A", card: { type: "markdown" } },
+        { name: "B", card: { type: "light" } },
+      ],
+    });
+    expect(el.shadowRoot.querySelector("tabdeck-tabbar")).toBeTruthy();
+    expect(el.shadowRoot.querySelector(".single-header")).toBeNull();
+  });
+});
+
+describe("tabdeck-card swipe swallow", () => {
+  it("swallows the click that follows a recognised swipe", async () => {
+    const el = await mount({
+      swipe: true,
+      tabs: [
+        { name: "A", card: { type: "markdown" } },
+        { name: "B", card: { type: "light" } },
+      ],
+    });
+    swipe(el, -120);
+    await el.updateComplete;
+    const inner = el.shadowRoot.querySelector(".panel:not([hidden]) [data-type]");
+    let clicked = false;
+    inner.addEventListener("click", () => (clicked = true));
+    inner.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true, cancelable: true }));
+    expect(clicked).toBe(false);
+  });
+
+  it("lets a fresh touch through again", async () => {
+    const el = await mount({
+      swipe: true,
+      tabs: [
+        { name: "A", card: { type: "markdown" } },
+        { name: "B", card: { type: "light" } },
+      ],
+    });
+    swipe(el, -120);
+    await el.updateComplete;
+    el.dispatchEvent(new Event("touchstart", { bubbles: false }));
+    const inner = el.shadowRoot.querySelector(".panel:not([hidden]) [data-type]");
+    let clicked = false;
+    inner.addEventListener("click", () => (clicked = true));
+    inner.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true, cancelable: true }));
+    expect(clicked).toBe(true);
+  });
+});

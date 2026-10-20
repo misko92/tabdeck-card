@@ -140,7 +140,8 @@ A ready-to-paste dashboard showcasing many features lives in
 | `badge_format` | object           | —            | Default numeric badge format `{precision, unit, max}`. |
 | `auto_rotate` / `idle_return` | number | —      | Cycle tabs every N s / return to the default tab after N s idle. |
 | `scroll_spy`  | boolean           | `false`      | Stack all tabs as sections; the bar scrolls to and tracks them. |
-| `collapsible` / `start_collapsed` | boolean | `false` | Tap the active tab to fold the content away. |
+| `collapsible` / `start_collapsed` | boolean | `false` | Tap the active tab to fold the content away. A deck that starts collapsed creates and mounts no cards until it is first opened. |
+| `single_tab_header` | boolean | `false` | With exactly one content tab, show a header row (icon, title, chevron) instead of the tab bar. With `collapsible`, tapping it folds the content. |
 | `split`       | number \| object  | —            | Side-by-side columns at/above this card width (`{min_width, columns}`). |
 | `tab_display_narrow` / `narrow_width` | string / number | — / `450` | Display mode on narrow cards. |
 

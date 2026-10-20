@@ -129,6 +129,7 @@ const GLOBAL_LABELS: Record<string, string> = {
   split: "Side-by-side split at or above width (px, 0 = off)",
   collapsible: "Collapsible (tap the active tab to fold content)",
   start_collapsed: "Start collapsed",
+  single_tab_header: "Single tab: show a header row instead of the tab bar",
   scroll_spy: "Scroll-spy: stack tabs as sections",
   auto_rotate: "Auto-rotate tabs every (seconds, 0 = off)",
   idle_return: "Return to default tab after idle (seconds, 0 = off)",
@@ -534,6 +535,7 @@ export class TabdeckCardEditor extends LitElement {
       { name: "split", selector: { number: { min: 0, max: 4000, step: 10, mode: "box" } } },
       { name: "collapsible", selector: { boolean: {} } },
       { name: "start_collapsed", selector: { boolean: {} } },
+      { name: "single_tab_header", selector: { boolean: {} } },
       { name: "scroll_spy", selector: { boolean: {} } },
       { name: "auto_rotate", selector: { number: { min: 0, max: 3600, step: 1, mode: "box" } } },
       { name: "idle_return", selector: { number: { min: 0, max: 86400, step: 1, mode: "box" } } },
@@ -577,6 +579,7 @@ export class TabdeckCardEditor extends LitElement {
       split: cfg.split?.min_width ?? 0,
       collapsible: cfg.collapsible,
       start_collapsed: cfg.start_collapsed,
+      single_tab_header: cfg.single_tab_header,
       scroll_spy: cfg.scroll_spy,
       auto_rotate: cfg.auto_rotate?.interval ?? 0,
       idle_return: cfg.idle_return ?? 0,
@@ -631,6 +634,7 @@ export class TabdeckCardEditor extends LitElement {
           : undefined,
       collapsible: !!v.collapsible,
       start_collapsed: !!v.collapsible && !!v.start_collapsed,
+      single_tab_header: !!v.single_tab_header,
       scroll_spy: !!v.scroll_spy,
       // Keep a YAML-set resume_after when only the interval is edited.
       auto_rotate:

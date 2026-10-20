@@ -6,6 +6,10 @@ section below as its release notes (see `.github/workflows/release.yml`).
 ## Unreleased
 
 ### Added
+- **`single_tab_header`** — a one-tab deck shows a header row (icon, title, chevron) instead of the tab bar; with `collapsible`, tapping it folds the content.
+- **`wrap`** — let the tab bar wrap onto several rows instead of scrolling sideways.
+- **`swipe_capture`** (default on) — touch gestures stay inside the card so page-level swipe navigation does not also fire.
+- Build id printed to the browser console on load.
 - **Live `remember: entity` sync** — the card now follows its helper entity when it changes elsewhere (another device, an automation, Node-RED), so the helper doubles as a remote control for wall panels. Echoes of the card's own writes are ignored.
 - **State-driven tab fields** — a tab's `icon`, `name`, `subtitle`, `color` and `accent` can be Jinja templates rendered live by Home Assistant (e.g. an open-garage icon in red).
 - **Numeric badge formatting** — `badge_format: { precision, unit, max }` per tab or as a top-level default (`21.456` → `21.5°`, `150` → `99+`).
@@ -26,6 +30,10 @@ section below as its release notes (see `.github/workflows/release.yml`).
 - **Slug deep links** — `#tab=living-room` / `#tab=LIGHTS` now match tab names case-insensitively and by slug, alongside exact names and indices.
 
 ### Fixed
+- `lazy` is now actually implemented (it was documented but a no-op): tab cards are created and mounted on first view. A deck that `start_collapsed` also creates nothing until it is first opened.
+- A recognised swipe no longer also taps/holds the card under the finger (which opened more-info).
+- Swipes are recognised during the drag, so a slightly diagonal drag is not lost to a native scroll.
+- The pill indicator no longer slides in from a stale position when fonts or icons settle after first render.
 - Editor button icons (Add tab) render on current WebAwesome-based HA builds.
 - `perform-action` actions (what HA's action picker writes) now work for `hold_action`, `badge_action` and `tap_action`; previously only the legacy `call-service` ran.
 - `sticky` bars now pin below Home Assistant's app header (`--header-height`) instead of hiding underneath it; override with `--tabdeck-sticky-top`.

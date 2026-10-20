@@ -20,11 +20,11 @@ import { detectSwipe, type SwipePoint } from "./lib/swipe";
 import "./components/tabdeck-tabbar";
 import { isActiveBadge } from "./components/tabdeck-tab";
 
-// Events that count as the user interacting with the card.
 // After a swipe changes the tab, these are swallowed (capture phase) until the
 // finger lifts, so the card under the swipe's start point doesn't also see a
 // tap/hold and open its more-info dialog.
 const SWALLOW_EVENTS = ["touchend", "touchcancel", "pointerup", "pointercancel", "mouseup", "click"] as const;
+// Events that count as the user interacting with the card.
 const INTERACTION_EVENTS = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
 
 // Tab display fields that may be Jinja templates (rendered live by HA).
@@ -40,6 +40,11 @@ export class TabdeckCard extends LitElement {
   private _widthObserver?: ResizeObserver;
   // collapsible: content folded away (the bar stays).
   @state() private _collapsed = false;
+  // Original tab indexes whose card has been shown (lazy mounting), and whether
+  // the deck has ever been expanded (a deck that starts collapsed mounts nothing
+  // until it is first opened).
+  private _visited = new Set<number>();
+  private _everExpanded = true;
   private _hass?: HomeAssistant;
   private _manager?: CardManager;
   private _cardKey = "";
@@ -75,6 +80,8 @@ export class TabdeckCard extends LitElement {
     this._built = false;
     this._selected = resolveDefaultIndex(this._config);
     this._collapsed = this._config.start_collapsed;
+    this._everExpanded = !this._config.start_collapsed;
+    this._visited = new Set();
     this._autoPrev = undefined;
     this._lastEntityValue = undefined;
     this._genTabs = [];
@@ -240,7 +247,7 @@ export class TabdeckCard extends LitElement {
     const create = await getCreateCardElement();
     this._manager = new CardManager(create);
     this._manager.addEventListener("ll-rebuild-done", () => this.requestUpdate());
-    await this._manager.build(this._cardConfigs());
+    await this._manager.build(this._cardConfigs(), this._deferCards);
     if (this._hass) this._manager.setHass(this._hass);
     this._syncTemplates();
     this._selected = loadInitialIndex({
@@ -329,6 +336,11 @@ export class TabdeckCard extends LitElement {
   // boolean (undefined while pending → fail-closed in isTabVisible).
   private _templateResolver = (tpl: string): boolean | undefined =>
     this._templates?.boolean(tpl);
+
+  // Create tab cards only when first shown (lazy, or a deck that starts folded).
+  private get _deferCards(): boolean {
+    return !!this._config && (this._config.lazy || this._config.start_collapsed);
+  }
 
   // Card configs aligned with _allTabs(); action tabs without a card get none.
   private _cardConfigs() {
@@ -471,7 +483,8 @@ export class TabdeckCard extends LitElement {
     // Restore selection synchronously, before awaiting the (internally sync)
     // rebuild, so the panel never renders the new tab set against a stale index.
     this._restoreSelection(prevName);
-    await this._manager.build(this._cardConfigs());
+    this._visited = new Set();
+    await this._manager.build(this._cardConfigs(), this._deferCards);
     if (this._hass) this._manager.setHass(this._hass);
     this._syncTemplates();
     this.requestUpdate();
@@ -539,9 +552,11 @@ export class TabdeckCard extends LitElement {
     if (this._config?.collapsible) {
       if (e.detail.index === this._selected) {
         this._collapsed = !this._collapsed;
+        if (!this._collapsed) this._everExpanded = true;
         return;
       }
       this._collapsed = false;
+      this._everExpanded = true;
     }
     this._selectIndex(e.detail.index);
   }
@@ -847,7 +862,13 @@ export class TabdeckCard extends LitElement {
     }
     const cfg = this._config;
     if (this._isSplit) return this._renderSplit(visible);
-    const bar = html`
+    const single =
+      cfg.single_tab_header &&
+      !cfg.scroll_spy &&
+      visible.length === 1 &&
+      !isActionTab(visible[0]);
+    const header = single ? this._renderSingleHeader(visible[0]) : nothing;
+    const bar = single ? header : html`
       <tabdeck-tabbar
         .items=${visible.map((t) => ({
           name: this._text(t.name),
@@ -913,6 +934,12 @@ export class TabdeckCard extends LitElement {
           const original = this._allTabs().indexOf(tab);
           const active = i === this._selected;
           const spy = cfg.scroll_spy;
+          if (active && !this._collapsed) this._visited.add(original);
+          // Mount rules: nothing while a deck that started folded has never been
+          // opened; with lazy, only tabs that have been shown.
+          const mount =
+            spy ||
+            (this._everExpanded && (!cfg.lazy || this._visited.has(original)));
           // With unmount_hidden, only the active panel's card is in the DOM
           // (others stay retained in the manager but detached) to save memory.
           // scroll_spy stacks every panel, so it always shows them all.
@@ -921,7 +948,7 @@ export class TabdeckCard extends LitElement {
               ${spy && cfg.header && !isActionTab(tab)
                 ? html`<div class="section-title">${this._text(tab.name) ?? ""}</div>`
                 : nothing}
-              ${spy || !cfg.unmount_hidden || active ? this._manager?.get(original) : nothing}
+              ${mount && (spy || !cfg.unmount_hidden || active) ? this._manager?.get(original) : nothing}
             </div>
           `;
         })}
@@ -931,6 +958,35 @@ export class TabdeckCard extends LitElement {
       <div class="root pos-${cfg.position}">
         ${cfg.position === "bottom" ? html`${panels}${bar}` : html`${bar}${panels}`}
       </div>
+    `;
+  }
+
+  // Header row for a one-tab deck: icon, title, and (when collapsible) a chevron
+  // that folds the content. Same toggle as tapping the active tab in the bar.
+  private _renderSingleHeader(tab: TabdeckTabConfig) {
+    const icon = this._text(tab.icon);
+    const name = this._text(tab.name) ?? "";
+    const subtitle = this._text(tab.subtitle);
+    const collapsible = !!this._config?.collapsible;
+    const open = !this._collapsed;
+    return html`
+      <button
+        class="single-header"
+        part="bar"
+        ?disabled=${!collapsible}
+        aria-expanded=${collapsible ? String(open) : nothing}
+        aria-controls="tabdeck-panel"
+        @click=${() => this._onSelect(new CustomEvent("tabdeck-select", { detail: { index: 0 } }))}
+      >
+        ${icon ? html`<ha-icon class="single-icon" .icon=${icon}></ha-icon>` : nothing}
+        <span class="single-text">
+          <span class="single-title">${name}</span>
+          ${subtitle ? html`<span class="single-subtitle">${subtitle}</span>` : nothing}
+        </span>
+        ${collapsible
+          ? html`<ha-icon class="single-chevron ${open ? "open" : ""}" icon="mdi:chevron-down"></ha-icon>`
+          : nothing}
+      </button>
     `;
   }
 
@@ -1020,6 +1076,51 @@ export class TabdeckCard extends LitElement {
     .empty {
       min-height: 8px;
     }
+    .single-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 12px;
+      border: none;
+      border-radius: var(--tabdeck-indicator-radius, 12px);
+      background: var(--tabdeck-bar-background, transparent);
+      color: var(--primary-text-color);
+      font: inherit;
+      text-align: start;
+      cursor: pointer;
+    }
+    .single-header:disabled {
+      cursor: default;
+    }
+    .single-icon {
+      --mdc-icon-size: 20px;
+      color: var(--tabdeck-accent, var(--secondary-text-color));
+    }
+    .single-text {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+      min-width: 0;
+    }
+    .single-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .single-subtitle {
+      font-size: 12px;
+      color: var(--secondary-text-color);
+    }
+    .single-chevron {
+      --mdc-icon-size: 22px;
+      color: var(--secondary-text-color);
+      transition: transform 0.2s ease;
+      transform: rotate(-90deg);
+    }
+    .single-chevron.open {
+      transform: rotate(0deg);
+    }
     .split {
       display: grid;
       grid-template-columns: repeat(var(--tabdeck-split-columns, 2), minmax(0, 1fr));
@@ -1050,6 +1151,12 @@ declare global {
     customCards?: any[];
   }
 }
+
+declare const __TABDECK_BUILD__: string | undefined;
+const BUILD = typeof __TABDECK_BUILD__ === "string" ? __TABDECK_BUILD__ : "dev";
+// Shows in the browser console so you can tell which build a dashboard loaded
+// (the resource URL's ?v= number only busts the cache).
+console.info(`%c TABDECK-CARD %c ${BUILD} `, "background:#03a9f4;color:#fff;border-radius:3px 0 0 3px", "background:#555;color:#fff;border-radius:0 3px 3px 0");
 
 window.customCards = window.customCards || [];
 window.customCards.push({

@@ -12,6 +12,8 @@ export class CardManager extends EventTarget {
   private _configs: (LovelaceCardConfig | null)[] = [];
   private _elements: any[] = [];
   private _hass?: HomeAssistant;
+  // When true, elements are created on first get() instead of up front.
+  private _lazy = false;
 
   constructor(create: CreateCardElement) {
     super();
@@ -20,9 +22,10 @@ export class CardManager extends EventTarget {
 
   // A `null` config reserves the slot without building a card (e.g. action
   // tabs), keeping indices aligned with the tab list.
-  async build(configs: (LovelaceCardConfig | null)[]): Promise<void> {
+  async build(configs: (LovelaceCardConfig | null)[], lazy = false): Promise<void> {
     this._configs = configs.slice();
-    this._elements = configs.map((cfg, index) => this._make(cfg, index));
+    this._lazy = lazy;
+    this._elements = lazy ? [] : configs.map((cfg, index) => this._make(cfg, index));
   }
 
   private _make(config: LovelaceCardConfig | null, index: number): any {
@@ -37,6 +40,9 @@ export class CardManager extends EventTarget {
   }
 
   get(index: number): any | undefined {
+    if (this._lazy && this._elements[index] === undefined && this._configs[index]) {
+      this._elements[index] = this._make(this._configs[index], index);
+    }
     return this._elements[index];
   }
 
