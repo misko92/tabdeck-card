@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 
 beforeAll(() => {
   (window as any).loadCardHelpers = async () => ({
@@ -1362,5 +1362,120 @@ describe("tabdeck-card remember_collapsed", () => {
     first.remove();
     const second = await mount(cfg({ remember_collapsed: false }));
     expect(second.shadowRoot.querySelector(".content").hasAttribute("hidden")).toBe(false);
+  });
+});
+
+describe("tabdeck-card re-renders only for relevant hass changes", () => {
+  const door = { state: "on" };
+  const lamp = { state: "off" };
+
+  it("ignores state changes of entities the deck does not use", async () => {
+    const el = await mount({
+      tabs: [
+        { name: "A", badge: "binary_sensor.door", card: { type: "markdown" } },
+        { name: "B", card: { type: "light" } },
+      ],
+    });
+    el.hass = { states: { "binary_sensor.door": door, "light.lamp": lamp } };
+    await el.updateComplete;
+    const spy = vi.spyOn(el, "requestUpdate");
+    // New hass object, same door state object, different lamp state.
+    el.hass = { states: { "binary_sensor.door": door, "light.lamp": { state: "on" } } };
+    expect(spy).not.toHaveBeenCalled();
+    // The badge entity changes: re-render.
+    el.hass = { states: { "binary_sensor.door": { state: "off" }, "light.lamp": lamp } };
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it("re-renders for entities in visibility conditions", async () => {
+    const el = await mount({
+      tabs: [
+        { name: "A", card: { type: "markdown" } },
+        {
+          name: "B",
+          visibility: [{ condition: "state", entity: "binary_sensor.door", state: "on" }],
+          card: { type: "light" },
+        },
+      ],
+    });
+    el.hass = { states: { "binary_sensor.door": door } };
+    await el.updateComplete;
+    const spy = vi.spyOn(el, "requestUpdate");
+    el.hass = { states: { "binary_sensor.door": { state: "off" } } };
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it("always re-renders when a tab uses a time or screen condition", async () => {
+    const el = await mount({
+      tabs: [
+        { name: "A", card: { type: "markdown" } },
+        { name: "B", visibility: [{ condition: "time", after: "06:00" }], card: { type: "light" } },
+      ],
+    });
+    el.hass = { states: { "light.lamp": lamp } };
+    await el.updateComplete;
+    const spy = vi.spyOn(el, "requestUpdate");
+    el.hass = { states: { "light.lamp": lamp } };
+    expect(spy).toHaveBeenCalled();
+  });
+
+  it("still passes every hass update to the nested cards", async () => {
+    const el = await mount({ tabs: [{ name: "A", card: { type: "markdown" } }] });
+    const next = { states: { "light.lamp": { state: "on" } } };
+    el.hass = next;
+    const card = el.shadowRoot.querySelector("[data-type]") as any;
+    expect(card.hass).toBe(next);
+  });
+});
+
+describe("tabdeck-card remember_collapsed defers card creation", () => {
+  it("creates no cards while the deck is remembered folded", async () => {
+    localStorage.clear();
+    const cfg = {
+      collapsible: true,
+      remember_collapsed: true,
+      storage_key: "rc-defer",
+      tabs: [{ name: "A", card: { type: "markdown" } }],
+    };
+    const first = await mount(cfg);
+    first.shadowRoot
+      .querySelector("tabdeck-tabbar")
+      .dispatchEvent(new CustomEvent("tabdeck-select", { detail: { index: 0 }, bubbles: true, composed: true }));
+    await first.updateComplete;
+    first.remove();
+    const second = await mount(cfg);
+    expect(second._manager.all().filter(Boolean)).toHaveLength(0);
+    second.shadowRoot
+      .querySelector("tabdeck-tabbar")
+      .dispatchEvent(new CustomEvent("tabdeck-select", { detail: { index: 0 }, bubbles: true, composed: true }));
+    await second.updateComplete;
+    expect(second.shadowRoot.querySelectorAll("[data-type]").length).toBeGreaterThan(0);
+  });
+});
+
+describe("tabdeck-card touch swipe with pointer events", () => {
+  it("recognises a swipe on touchend even when pointerup (touch) fires first", async () => {
+    const el = await mount({
+      swipe: true,
+      swipe_mouse: true,
+      tabs: [
+        { name: "A", card: { type: "markdown" } },
+        { name: "B", card: { type: "light" } },
+      ],
+    });
+    const content = el.shadowRoot.querySelector(".content");
+    const ev = (type: string, props: any, t: number) => {
+      const e = new Event(type, { bubbles: true }) as any;
+      Object.assign(e, props);
+      Object.defineProperty(e, "timeStamp", { value: t });
+      content.dispatchEvent(e);
+    };
+    // Browser order for a touch: pointerdown, touchstart, pointerup, touchend.
+    ev("pointerdown", { clientX: 200, clientY: 100, pointerType: "touch" }, 1000);
+    ev("touchstart", { touches: [{ clientX: 200, clientY: 100 }] }, 1000);
+    ev("pointerup", { clientX: 80, clientY: 102, pointerType: "touch" }, 1200);
+    ev("touchend", { changedTouches: [{ clientX: 80, clientY: 102 }] }, 1200);
+    await el.updateComplete;
+    expect(el.shadowRoot.querySelector("tabdeck-tabbar").selected).toBe(1);
   });
 });

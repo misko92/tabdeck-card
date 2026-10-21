@@ -88,6 +88,7 @@ export class TabdeckCard extends LitElement {
     this._lastEntityValue = undefined;
     this._genTabs = [];
     this._genKey = "";
+    this._watched = undefined;
     // Drop any subscriptions from a previous config; they re-sync on next hass.
     this._templates?.destroy();
     this._templates = undefined;
@@ -270,12 +271,57 @@ export class TabdeckCard extends LitElement {
   }
 
   set hass(hass: HomeAssistant) {
+    const prev = this._hass;
     this._hass = hass;
+    // Nested cards get every update directly; they don't need the deck to re-render.
     this._manager?.setHass(hass);
     this._syncTemplates();
     this._runAutoSelect();
     this._syncRememberEntity();
-    this.requestUpdate();
+    if (this._hassAffectsDeck(prev, hass)) this.requestUpdate();
+  }
+
+  // Entity ids the deck's own rendering reads (badges, conditions, auto_select,
+  // remember_entity). null = something depends on more than entity state (time
+  // or screen conditions), so every hass update must re-render. Cached; reset
+  // whenever the tab list changes.
+  private _watched?: string[] | null;
+
+  private _watchedEntities(): string[] | null {
+    if (this._watched !== undefined) return this._watched;
+    const out = new Set<string>();
+    let always = false;
+    const walk = (conds: any[] | undefined) => {
+      for (const c of conds ?? []) {
+        if (c?.condition === "time" || c?.condition === "screen") always = true;
+        if (typeof c?.entity === "string") out.add(c.entity);
+        if (Array.isArray(c?.conditions)) walk(c.conditions);
+      }
+    };
+    for (const t of this._allTabs()) {
+      // A non-template badge is an entity id (or a literal, which never changes).
+      if (t.badge && !isTemplate(t.badge)) out.add(t.badge);
+      if (t.auto_select) out.add(t.auto_select.entity);
+      walk(t.visibility);
+      walk(t.default_if);
+      walk(t.alert);
+    }
+    if (this._config?.remember_entity) out.add(this._config.remember_entity);
+    this._watched = always ? null : [...out];
+    return this._watched;
+  }
+
+  // HA hands every card a new hass object on each state change anywhere in the
+  // house, but unchanged entities keep the same state object. Only re-render
+  // when something this deck shows has actually changed.
+  private _hassAffectsDeck(prev: HomeAssistant | undefined, next: HomeAssistant): boolean {
+    if (!prev || !this._built) return true;
+    const p = prev as any;
+    const n = next as any;
+    if (p.user !== n.user || p.areas !== n.areas || p.locale !== n.locale) return true;
+    const watched = this._watchedEntities();
+    if (watched === null) return true;
+    return watched.some((id) => prev.states?.[id] !== next.states?.[id]);
   }
 
   private _rememberEntityState(): string | undefined {
@@ -339,9 +385,10 @@ export class TabdeckCard extends LitElement {
   private _templateResolver = (tpl: string): boolean | undefined =>
     this._templates?.boolean(tpl);
 
-  // Create tab cards only when first shown (lazy, or a deck that starts folded).
+  // Create tab cards only when first shown: lazy, or a deck that has not been
+  // opened yet (start_collapsed, or folded on this device via remember_collapsed).
   private get _deferCards(): boolean {
-    return !!this._config && (this._config.lazy || this._config.start_collapsed);
+    return !!this._config && (this._config.lazy || !this._everExpanded);
   }
 
   // Card configs aligned with _allTabs(); action tabs without a card get none.
@@ -482,6 +529,7 @@ export class TabdeckCard extends LitElement {
     const prevName = this._visibleTabs()[this._selected]?.name;
     this._genKey = key;
     this._genTabs = raw.map(normalizeTab);
+    this._watched = undefined;
     // Restore selection synchronously, before awaiting the (internally sync)
     // rebuild, so the panel never renders the new tab set against a stale index.
     this._restoreSelection(prevName);
@@ -772,8 +820,11 @@ export class TabdeckCard extends LitElement {
 
   // Mouse (pointer) drag swiping — opt-in via swipe_mouse, ignores touch
   // pointers (handled by the touch listeners).
+  // Touch pointers are ignored entirely: browsers fire pointerup before
+  // touchend, so clearing _touchStart here would kill the touchend path.
   private _onPointerDown = (e: PointerEvent): void => {
-    if (!this._config?.swipe_mouse || e.pointerType === "touch") {
+    if (e.pointerType === "touch") return;
+    if (!this._config?.swipe_mouse) {
       this._touchStart = undefined;
       return;
     }
@@ -781,9 +832,10 @@ export class TabdeckCard extends LitElement {
   };
 
   private _onPointerUp = (e: PointerEvent): void => {
+    if (e.pointerType === "touch") return;
     const start = this._touchStart;
     this._touchStart = undefined;
-    if (!start || !this._config?.swipe_mouse || e.pointerType === "touch") return;
+    if (!start || !this._config?.swipe_mouse) return;
     this._applySwipe(start, { x: e.clientX, y: e.clientY, t: e.timeStamp });
   };
 

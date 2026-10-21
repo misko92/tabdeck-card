@@ -31,6 +31,10 @@ section below as its release notes (see `.github/workflows/release.yml`).
 - **Slug deep links** — `#tab=living-room` / `#tab=LIGHTS` now match tab names case-insensitively and by slug, alongside exact names and indices.
 
 ### Fixed
+- **Fewer re-renders** — the deck no longer re-renders on every Home Assistant state change; only when an entity it shows (badges, visibility/alert/default_if conditions, `auto_select`, `remember_entity`) changes. Nested cards still receive every update. Decks with `time` or `screen` conditions keep updating on every change.
+- A deck remembered as folded (`remember_collapsed`) no longer creates its cards until first opened.
+- Touch swipes detected at finger lift work again: touch pointer events no longer clear the swipe start.
+
 - `lazy` is now actually implemented (it was documented but a no-op): tab cards are created and mounted on first view. A deck that `start_collapsed` also creates nothing until it is first opened.
 - A recognised swipe no longer also taps/holds the card under the finger (which opened more-info).
 - Swipes are recognised during the drag, so a slightly diagonal drag is not lost to a native scroll.
