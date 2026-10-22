@@ -63,6 +63,7 @@ function globalsData() {
     badge_display: "text",
     hide_inactive_badge: false,
     transition: "none",
+    transition_duration: 400,
     indicator_size: 3,
     indicator_radius: undefined,
     remember: "none",

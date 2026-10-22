@@ -18,7 +18,6 @@ import { isTemplate, TemplateRenderer, type SubscribeFn } from "./lib/templates"
 import { formatBadge } from "./lib/badge";
 import { detectSwipe, type SwipePoint } from "./lib/swipe";
 import {
-  PANEL_DURATION_MS,
   PANEL_EASING,
   panelFrames,
   slideDirection,
@@ -872,6 +871,23 @@ export class TabdeckCard extends LitElement {
   // Which side the next panel slides in from (see _animatePanel).
   private _slideDir: SlideDirection = 1;
 
+  // Panel that is animating out. Its card stays mounted until the switch
+  // ends, even with unmount_hidden, so it doesn't slide away empty.
+  @state() private _leaving?: number;
+
+  protected willUpdate(changed: PropertyValues): void {
+    super.willUpdate(changed);
+    const prev = changed.get("_selected");
+    if (
+      changed.has("_selected") &&
+      prev !== undefined &&
+      this._config?.transition !== "none" &&
+      !this._config?.scroll_spy
+    ) {
+      this._leaving = prev as number;
+    }
+  }
+
   protected updated(changed: PropertyValues): void {
     super.updated(changed);
     const visible = this._visibleTabs();
@@ -881,7 +897,7 @@ export class TabdeckCard extends LitElement {
       changed.get("_selected") !== undefined &&
       !this._config?.scroll_spy
     ) {
-      this._animatePanel();
+      this._animatePanel(changed.get("_selected") as number);
     }
     this._applyStyles();
     this._syncSpyObserver();
@@ -904,35 +920,77 @@ export class TabdeckCard extends LitElement {
     }
   }
 
-  // Play a short enter animation on the newly-active panel when a transition is
-  // configured. Uses the Web Animations API so it replays on every switch;
-  // skipped for `none`, in jsdom, and under prefers-reduced-motion.
-  private _animatePanel(): void {
-    const mode = this._config?.transition;
-    if (!mode || mode === "none") return;
+  // Stops a running panel switch and restores the panels' styles.
+  private _endPanelAnim?: () => void;
+
+  // Animate a switch from panel `prev` to the active one when a transition is
+  // configured. The old panel is kept on screen (layered over the new one)
+  // while it leaves, and the deck's height eases between the two panels.
+  // Skipped for `none`, in jsdom, and under prefers-reduced-motion.
+  private _animatePanel(prev: number): void {
+    this._endPanelAnim?.();
+    const cfg = this._config;
+    const mode = cfg?.transition;
+    if (!cfg || !mode || mode === "none") return this._clearLeaving(prev);
     if (
       typeof matchMedia === "function" &&
       matchMedia("(prefers-reduced-motion: reduce)").matches
     )
-      return;
-    const panel = this.renderRoot?.querySelector?.(
-      ".panel:not([hidden])",
+      return this._clearLeaving(prev);
+    const root = this.renderRoot as ParentNode | undefined;
+    const panel = root?.querySelector?.(
+      `.panel[data-index="${this._selected}"]`,
     ) as HTMLElement | null;
-    if (!panel || typeof panel.animate !== "function") return;
-    // Clip sideways overflow only while sliding, so the moving panel can't
-    // cause a brief horizontal scrollbar but inner card shadows stay intact.
-    const content = panel.parentElement;
-    if (mode === "slide" && content) content.style.overflowX = "clip";
-    const anim = panel.animate(panelFrames(mode, this._slideDir), {
-      duration: PANEL_DURATION_MS,
+    const old = root?.querySelector?.(`.panel[data-index="${prev}"]`) as HTMLElement | null;
+    const content = panel?.parentElement;
+    if (!panel || !content || typeof panel.animate !== "function") return this._clearLeaving(prev);
+
+    const newHeight = content.offsetHeight;
+    // Positioned (so the old panel can be placed over the new one) and clipped
+    // while moving so nothing spills over neighbouring cards or causes a
+    // horizontal scrollbar; inner card shadows are only clipped mid-switch.
+    content.style.position = "relative";
+    content.style.overflow = "clip";
+    // Show the old panel again, out of flow, exactly where the new one sits.
+    if (old && old !== panel) {
+      old.style.cssText =
+        `display:block;position:absolute;left:0;right:0;top:${panel.offsetTop}px;pointer-events:none;`;
+    }
+    const oldHeight =
+      old && old !== panel ? newHeight - panel.offsetHeight + old.offsetHeight : newHeight;
+
+    const timing: KeyframeAnimationOptions = {
+      duration: cfg.transition_duration,
       easing: PANEL_EASING,
-    });
-    const unclip = () => {
-      if (content) content.style.overflowX = "";
     };
-    anim.onfinish = unclip;
-    anim.oncancel = unclip;
+    const frames = panelFrames(mode, this._slideDir);
+    const anims: Animation[] = [panel.animate(frames.enter, timing)];
+    if (old && old !== panel) anims.push(old.animate(frames.leave, timing));
+    if (oldHeight !== newHeight) {
+      anims.push(
+        content.animate([{ height: `${oldHeight}px` }, { height: `${newHeight}px` }], timing),
+      );
+    }
+
+    const end = () => {
+      if (this._endPanelAnim !== end) return this._clearLeaving(prev);
+      this._endPanelAnim = undefined;
+      for (const a of anims) a.cancel();
+      if (old && old !== panel) old.style.cssText = "";
+      content.style.position = "";
+      content.style.overflow = "";
+      this._clearLeaving(prev);
+    };
+    this._endPanelAnim = end;
+    Promise.all(anims.map((a) => a.finished)).then(end, () => {});
   }
+  // Let the panel that was animating out unmount again (unmount_hidden). A
+  // newer switch may already have marked a different panel as leaving.
+  private _clearLeaving(prev: number): void {
+    if (this._leaving === prev) this._leaving = undefined;
+  }
+
+
 
   render() {
     if (!this._config || !this._built) return nothing;
@@ -1028,7 +1086,7 @@ export class TabdeckCard extends LitElement {
               ${spy && cfg.header && !isActionTab(tab)
                 ? html`<div class="section-title">${this._text(tab.name) ?? ""}</div>`
                 : nothing}
-              ${mount && (spy || !cfg.unmount_hidden || active) ? this._manager?.get(original) : nothing}
+              ${mount && (spy || !cfg.unmount_hidden || active || i === this._leaving) ? this._manager?.get(original) : nothing}
             </div>
           `;
         })}

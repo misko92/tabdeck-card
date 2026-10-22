@@ -89,6 +89,8 @@ export interface TabdeckCardConfig {
   // Default numeric badge format for every tab (a tab's own badge_format wins).
   badge_format?: BadgeFormat;
   transition: PanelTransition;
+  // Length of the panel switch animation, in milliseconds.
+  transition_duration: number;
   indicator_size: number;
   indicator_radius?: number;
   scrollable: "auto" | boolean;
@@ -287,6 +289,7 @@ export function normalizeConfig(raw: any): TabdeckCardConfig {
     hide_inactive_badge: Boolean(raw?.hide_inactive_badge),
     badge_format: normalizeBadgeFormat(raw?.badge_format),
     transition: pick(raw?.transition, TRANSITIONS, "none"),
+    transition_duration: clampNumber(raw?.transition_duration, 100, 2000, 400),
     indicator_size: clampNumber(raw?.indicator_size, 1, 16, 3),
     indicator_radius:
       raw?.indicator_radius === undefined

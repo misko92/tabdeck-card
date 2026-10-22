@@ -2,17 +2,23 @@ import { describe, expect, it } from "vitest";
 import { panelFrames, slideDirection } from "./transition";
 
 describe("panelFrames", () => {
-  it("slides in from the right when moving forward", () => {
-    expect(panelFrames("slide", 1)[0].transform).toBe("translateX(32px)");
+  it("slide forward: new panel enters from the right, old leaves to the left", () => {
+    const f = panelFrames("slide", 1);
+    expect(f.enter[0].transform).toBe("translateX(100%)");
+    expect(f.leave[1].transform).toBe("translateX(-100%)");
   });
-  it("slides in from the left when moving back", () => {
-    expect(panelFrames("slide", -1)[0].transform).toBe("translateX(-32px)");
+  it("slide back: new panel enters from the left, old leaves to the right", () => {
+    const f = panelFrames("slide", -1);
+    expect(f.enter[0].transform).toBe("translateX(-100%)");
+    expect(f.leave[1].transform).toBe("translateX(100%)");
   });
-  it("fades without movement", () => {
-    expect(panelFrames("fade", -1)).toEqual([{ opacity: 0 }, { opacity: 1 }]);
+  it("fade crossfades without movement", () => {
+    const f = panelFrames("fade", 1);
+    expect(f.enter).toEqual([{ opacity: 0 }, { opacity: 1 }]);
+    expect(f.leave).toEqual([{ opacity: 1 }, { opacity: 0 }]);
   });
-  it("has no frames for none", () => {
-    expect(panelFrames("none", 1)).toEqual([]);
+  it("none has no frames", () => {
+    expect(panelFrames("none", 1)).toEqual({ enter: [], leave: [] });
   });
 });
 
