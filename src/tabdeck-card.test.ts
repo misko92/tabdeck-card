@@ -1479,3 +1479,37 @@ describe("tabdeck-card touch swipe with pointer events", () => {
     expect(el.shadowRoot.querySelector("tabdeck-tabbar").selected).toBe(1);
   });
 });
+
+describe("tabdeck-card hide_bar", () => {
+  const two = (extra: any = {}) => ({
+    swipe: true,
+    tabs: [
+      { name: "Now", card: { type: "markdown" } },
+      { name: "Daily", card: { type: "light" } },
+    ],
+    ...extra,
+  });
+
+  it("renders no tab bar when hide_bar is on", async () => {
+    const el = await mount(two({ hide_bar: true }));
+    expect(el.shadowRoot.querySelector("tabdeck-tabbar")).toBeNull();
+    expect(el.shadowRoot.querySelector(".content").classList.contains("no-bar")).toBe(true);
+  });
+
+  it("still changes tabs by swiping without a bar", async () => {
+    const el = await mount(two({ hide_bar: true, swipe_wrap: true }));
+    swipe(el, -120);
+    await el.updateComplete;
+    expect(el._selected).toBe(1);
+    const visible = [...el.shadowRoot.querySelectorAll(".panel")].map((p: any) => !p.hidden);
+    expect(visible).toEqual([false, true]);
+    swipe(el, -120); // wraps back to the first
+    await el.updateComplete;
+    expect(el._selected).toBe(0);
+  });
+
+  it("keeps the bar by default", async () => {
+    const el = await mount(two());
+    expect(el.shadowRoot.querySelector("tabdeck-tabbar")).toBeTruthy();
+  });
+});

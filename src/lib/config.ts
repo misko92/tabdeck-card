@@ -112,6 +112,8 @@ export interface TabdeckCardConfig {
   overflow_menu: boolean;
   // Let the tab bar wrap onto several rows instead of scrolling sideways.
   wrap: boolean;
+  // No tab bar at all: change tabs by swiping (or auto_rotate / auto_select).
+  hide_bar: boolean;
   bar_background?: string;
   swipe: boolean;
   styles: Record<string, string>;
@@ -308,6 +310,7 @@ export function normalizeConfig(raw: any): TabdeckCardConfig {
     scroll_buttons: Boolean(raw?.scroll_buttons),
     overflow_menu: Boolean(raw?.overflow_menu),
     wrap: Boolean(raw?.wrap),
+    hide_bar: Boolean(raw?.hide_bar),
     bar_background: raw?.bar_background ?? undefined,
     swipe: Boolean(raw?.swipe),
     styles: raw?.styles ?? {},

@@ -928,7 +928,7 @@ export class TabdeckCard extends LitElement {
       visible.length === 1 &&
       !isActionTab(visible[0]);
     const header = single ? this._renderSingleHeader(visible[0]) : nothing;
-    const bar = single ? header : html`
+    const bar = cfg.hide_bar ? nothing : single ? header : html`
       <tabdeck-tabbar
         .items=${visible.map((t) => ({
           name: this._text(t.name),
@@ -969,7 +969,7 @@ export class TabdeckCard extends LitElement {
     `;
     const panels = html`
       <div
-        class="content"
+        class="content ${cfg.hide_bar ? "no-bar" : ""}"
         id="tabdeck-panel"
         role="tabpanel"
         ?hidden=${this._collapsed}
@@ -1100,6 +1100,9 @@ export class TabdeckCard extends LitElement {
     }
     .content {
       padding-top: 8px;
+    }
+    .content.no-bar {
+      padding-top: 0;
     }
     .content-header {
       display: flex;

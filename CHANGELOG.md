@@ -6,6 +6,7 @@ section below as its release notes (see `.github/workflows/release.yml`).
 ## Unreleased
 
 ### Added
+- **`hide_bar`** — hide the tab bar entirely for a swipe-only deck (e.g. current weather ↔ forecast).
 - **`remember_collapsed`** — a `collapsible` deck remembers whether it was folded, per device.
 - **`single_tab_header`** — a one-tab deck shows a header row (icon, title, chevron) instead of the tab bar; with `collapsible`, tapping it folds the content.
 - **`wrap`** — let the tab bar wrap onto several rows instead of scrolling sideways.

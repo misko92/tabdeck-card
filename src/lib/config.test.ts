@@ -73,6 +73,8 @@ describe("normalizeConfig", () => {
     expect(normalizeConfig({ scroll_buttons: true, tabs: [{ card: {} }] }).scroll_buttons).toBe(true);
     expect(normalizeConfig({ overflow_menu: true, tabs: [{ card: {} }] }).overflow_menu).toBe(true);
     expect(normalizeConfig({ wrap: true, tabs: [{ card: {} }] }).wrap).toBe(true);
+    expect(normalizeConfig({ hide_bar: true, tabs: [{ card: {} }] }).hide_bar).toBe(true);
+    expect(normalizeConfig({ tabs: [{ card: {} }] }).hide_bar).toBe(false);
     expect(normalizeConfig({ tabs: [{ card: {} }] }).swipe_capture).toBe(true);
     expect(normalizeConfig({ swipe_capture: false, tabs: [{ card: {} }] }).swipe_capture).toBe(false);
     expect(normalizeConfig({ tabs: [{ card: {} }] }).wrap).toBe(false);
