@@ -17,6 +17,13 @@ import { CardManager, getCreateCardElement } from "./lib/card-lifecycle";
 import { isTemplate, TemplateRenderer, type SubscribeFn } from "./lib/templates";
 import { formatBadge } from "./lib/badge";
 import { detectSwipe, type SwipePoint } from "./lib/swipe";
+import {
+  PANEL_DURATION_MS,
+  PANEL_EASING,
+  panelFrames,
+  slideDirection,
+  type SlideDirection,
+} from "./lib/transition";
 import "./components/tabdeck-tabbar";
 import { isActiveBadge } from "./components/tabdeck-tab";
 
@@ -713,6 +720,7 @@ export class TabdeckCard extends LitElement {
     const visible = this._visibleTabs();
     const prev = visible[this._selected];
     const changed = index !== this._selected;
+    if (changed) this._slideDir = slideDirection(this._selected, index);
     this._selected = index;
     if (changed) {
       this._runAction(prev?.leave_action, "tap");
@@ -854,8 +862,15 @@ export class TabdeckCard extends LitElement {
       dir === "next" ? 1 : -1,
       this._config.swipe_wrap,
     );
-    if (target !== this._selected) this._selectIndex(target);
+    if (target !== this._selected) {
+      this._selectIndex(target);
+      // When wrapping past an end, slide the way the finger moved.
+      this._slideDir = dir === "next" ? 1 : -1;
+    }
   }
+
+  // Which side the next panel slides in from (see _animatePanel).
+  private _slideDir: SlideDirection = 1;
 
   protected updated(changed: PropertyValues): void {
     super.updated(changed);
@@ -904,14 +919,19 @@ export class TabdeckCard extends LitElement {
       ".panel:not([hidden])",
     ) as HTMLElement | null;
     if (!panel || typeof panel.animate !== "function") return;
-    const frames =
-      mode === "slide"
-        ? [
-            { opacity: 0, transform: "translateX(12px)" },
-            { opacity: 1, transform: "translateX(0)" },
-          ]
-        : [{ opacity: 0 }, { opacity: 1 }];
-    panel.animate(frames, { duration: 180, easing: "ease" });
+    // Clip sideways overflow only while sliding, so the moving panel can't
+    // cause a brief horizontal scrollbar but inner card shadows stay intact.
+    const content = panel.parentElement;
+    if (mode === "slide" && content) content.style.overflowX = "clip";
+    const anim = panel.animate(panelFrames(mode, this._slideDir), {
+      duration: PANEL_DURATION_MS,
+      easing: PANEL_EASING,
+    });
+    const unclip = () => {
+      if (content) content.style.overflowX = "";
+    };
+    anim.onfinish = unclip;
+    anim.oncancel = unclip;
   }
 
   render() {
