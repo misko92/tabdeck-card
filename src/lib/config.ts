@@ -134,6 +134,9 @@ export interface TabdeckCardConfig {
   single_tab_header: boolean;
   // Remember the folded/unfolded state per device (browser storage).
   remember_collapsed: boolean;
+  // Seconds a browser-remembered tab / fold state stays valid after the card
+  // was last on screen. Older state is ignored (back to default). Unset = forever.
+  remember_for?: number;
   // Wide cards: every content tab side by side, no bar.
   split?: SplitConfig;
   // Narrow cards (< narrow_width px): use this tab_display instead.
@@ -331,6 +334,7 @@ export function normalizeConfig(raw: any): TabdeckCardConfig {
     start_collapsed: Boolean(raw?.collapsible && raw?.start_collapsed),
     single_tab_header: Boolean(raw?.single_tab_header),
     remember_collapsed: Boolean(raw?.collapsible && raw?.remember_collapsed),
+    remember_for: Number(raw?.remember_for) > 0 ? Math.max(5, Number(raw.remember_for)) : undefined,
     idle_return:
       Number(raw?.idle_return) > 0 ? Math.max(5, Number(raw.idle_return)) : undefined,
   };

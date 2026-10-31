@@ -12,7 +12,13 @@ import {
 } from "./lib/config";
 import { expandGeneratedTabs } from "./lib/generate";
 import { isTabVisible } from "./lib/conditions";
-import { loadCollapsed, loadInitialIndex, persistCollapsed, persistIndex } from "./lib/persistence";
+import {
+  loadCollapsed,
+  loadInitialIndex,
+  persistCollapsed,
+  persistIndex,
+  touchSeen,
+} from "./lib/persistence";
 import { CardManager, getCreateCardElement } from "./lib/card-lifecycle";
 import { isTemplate, TemplateRenderer, type SubscribeFn } from "./lib/templates";
 import { formatBadge } from "./lib/badge";
@@ -86,8 +92,13 @@ export class TabdeckCard extends LitElement {
     this._built = false;
     this._selected = resolveDefaultIndex(this._config);
     // A remembered fold state (this device) wins over start_collapsed.
-    const remembered = this._config.remember_collapsed ? loadCollapsed(this._cardKey) : null;
+    const remembered = this._config.remember_collapsed
+      ? loadCollapsed(this._cardKey, undefined, this._config.remember_for)
+      : null;
     this._collapsed = remembered ?? this._config.start_collapsed;
+    if (this._config.remember_collapsed && this._config.remember_for && remembered === null) {
+      persistCollapsed(this._cardKey, this._collapsed);
+    }
     this._everExpanded = !this._collapsed;
     this._visited = new Set();
     this._autoPrev = undefined;
@@ -168,6 +179,8 @@ export class TabdeckCard extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    // Leaving the page (e.g. following a link): start the remember_for clock now.
+    this._touchSeen();
     for (const ev of INTERACTION_EVENTS) this.removeEventListener(ev, this._onInteraction);
     for (const ev of SWALLOW_EVENTS) this.removeEventListener(ev, this._swallow, true);
     this.removeEventListener("touchstart", this._resetSwallow, true);
@@ -269,8 +282,18 @@ export class TabdeckCard extends LitElement {
       entityValue: this._config.remember_entity
         ? this._hass?.states?.[this._config.remember_entity]?.state
         : undefined,
+      rememberFor: this._config.remember_for,
     });
     this._selected = this._ensureContentTab(this._selected);
+    // With remember_for, store what is actually shown now, so an expired
+    // choice can't come back on the next visit.
+    if (this._config.remember_for && this._config.remember === "browser") {
+      try {
+        persistIndex({ mode: "browser", cardKey: this._cardKey, index: this._selected });
+      } catch {
+        /* storage unavailable: nothing is remembered anyway */
+      }
+    }
     this._lastEntityValue = this._rememberEntityState();
     this._built = true;
     this.requestUpdate();
@@ -620,7 +643,17 @@ export class TabdeckCard extends LitElement {
   }
 
   private _saveCollapsed(): void {
-    if (this._config?.remember_collapsed) persistCollapsed(this._cardKey, this._collapsed);
+    if (this._config?.remember_collapsed) {
+      persistCollapsed(this._cardKey, this._collapsed);
+      this._touchSeen();
+    }
+  }
+
+  // Record "last on screen" for remember_for (only when something is remembered).
+  private _touchSeen(): void {
+    const c = this._config;
+    if (!c?.remember_for || !this._cardKey) return;
+    if (c.remember === "browser" || c.remember_collapsed) touchSeen(this._cardKey);
   }
 
   // --- scroll_spy -----------------------------------------------------------
@@ -736,6 +769,7 @@ export class TabdeckCard extends LitElement {
       if (r.hash && typeof location !== "undefined") {
         history.replaceState(null, "", r.hash);
       }
+      this._touchSeen();
       if (this._config.remember === "entity") this._writeRememberEntity(this._selected);
     }
     if (this._config?.scroll_spy && !this._spyDriven) this._scrollToSection(index);

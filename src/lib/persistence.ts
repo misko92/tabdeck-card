@@ -32,6 +32,39 @@ export function parseHashIndex(hash: string, tabNames: string[]): number | null 
   return null;
 }
 
+// remember_for: browser-stored state (selected tab, folded state) is only used
+// if the card was last seen within this many seconds. The "last seen" time is
+// written when the user changes tabs/folds and when the card leaves the page.
+function seenKey(cardKey: string): string {
+  return storageKey(cardKey) + ":seen";
+}
+
+export function touchSeen(cardKey: string, storage?: Storage, now: number = Date.now()): void {
+  try {
+    (storage ?? globalThis.localStorage)?.setItem(seenKey(cardKey), String(now));
+  } catch {
+    /* storage unavailable: fine */
+  }
+}
+
+// True when remembered state may be used: no remember_for set, or seen recently.
+export function isRememberFresh(
+  cardKey: string,
+  rememberFor: number | undefined,
+  storage?: Storage,
+  now: number = Date.now(),
+): boolean {
+  if (!rememberFor) return true;
+  try {
+    const raw = (storage ?? globalThis.localStorage)?.getItem(seenKey(cardKey));
+    const seen = Number(raw);
+    if (raw === null || raw === undefined || !Number.isFinite(seen)) return false;
+    return now - seen <= rememberFor * 1000;
+  } catch {
+    return false;
+  }
+}
+
 export function loadInitialIndex(opts: {
   mode: RememberMode;
   cardKey: string;
@@ -41,6 +74,8 @@ export function loadInitialIndex(opts: {
   tabNames?: string[];
   storage?: Storage;
   entityValue?: string;
+  rememberFor?: number;
+  now?: number;
 }): number {
   const { mode, cardKey, defaultIndex, tabCount } = opts;
   if (mode === "entity") {
@@ -54,7 +89,7 @@ export function loadInitialIndex(opts: {
     const idx = parseHashIndex(opts.hash ?? "", opts.tabNames ?? []);
     if (idx !== null) return clamp(idx, tabCount, defaultIndex);
   }
-  if (mode === "browser") {
+  if (mode === "browser" && isRememberFresh(cardKey, opts.rememberFor, opts.storage, opts.now)) {
     const store = opts.storage ?? globalThis.localStorage;
     const raw = store?.getItem(storageKey(cardKey));
     if (raw !== null && raw !== undefined) {
@@ -66,7 +101,13 @@ export function loadInitialIndex(opts: {
 
 // Folded/unfolded state for `collapsible` decks (remember_collapsed). Stored
 // separately from the selected tab; null = nothing remembered yet.
-export function loadCollapsed(cardKey: string, storage?: Storage): boolean | null {
+export function loadCollapsed(
+  cardKey: string,
+  storage?: Storage,
+  rememberFor?: number,
+  now?: number,
+): boolean | null {
+  if (!isRememberFresh(cardKey, rememberFor, storage, now)) return null;
   try {
     const raw = (storage ?? globalThis.localStorage)?.getItem(storageKey(cardKey) + ":collapsed");
     return raw === "1" ? true : raw === "0" ? false : null;

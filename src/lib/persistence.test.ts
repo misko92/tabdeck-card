@@ -4,6 +4,9 @@ import {
   loadInitialIndex,
   persistIndex,
   parseHashIndex,
+  touchSeen,
+  isRememberFresh,
+  loadCollapsed,
 } from "./persistence";
 
 function memStorage(seed: Record<string, string> = {}): Storage {
@@ -82,5 +85,54 @@ describe("persistIndex", () => {
     const r = persistIndex({ mode: "none", cardKey: "k", index: 1, storage });
     expect(r.hash).toBeUndefined();
     expect(storage.length).toBe(0);
+  });
+});
+
+describe("remember_for (forget remembered state after time away)", () => {
+  const key = storageKey("k");
+  const seen = key + ":seen";
+  const NOW = 1_000_000_000;
+
+  it("uses the remembered tab when seen within remember_for", () => {
+    const storage = memStorage({ [key]: "2", [seen]: String(NOW - 60_000) });
+    expect(
+      loadInitialIndex({ mode: "browser", cardKey: "k", defaultIndex: 0, tabCount: 3, storage, rememberFor: 300, now: NOW }),
+    ).toBe(2);
+  });
+
+  it("falls back to the default tab when last seen longer ago", () => {
+    const storage = memStorage({ [key]: "2", [seen]: String(NOW - 301_000) });
+    expect(
+      loadInitialIndex({ mode: "browser", cardKey: "k", defaultIndex: 0, tabCount: 3, storage, rememberFor: 300, now: NOW }),
+    ).toBe(0);
+  });
+
+  it("treats a missing or bad seen time as expired", () => {
+    expect(
+      loadInitialIndex({ mode: "browser", cardKey: "k", defaultIndex: 1, tabCount: 3, storage: memStorage({ [key]: "2" }), rememberFor: 300, now: NOW }),
+    ).toBe(1);
+    expect(
+      loadInitialIndex({ mode: "browser", cardKey: "k", defaultIndex: 1, tabCount: 3, storage: memStorage({ [key]: "2", [seen]: "x" }), rememberFor: 300, now: NOW }),
+    ).toBe(1);
+  });
+
+  it("keeps the old forever behaviour without remember_for", () => {
+    const storage = memStorage({ [key]: "2" });
+    expect(loadInitialIndex({ mode: "browser", cardKey: "k", defaultIndex: 0, tabCount: 3, storage })).toBe(2);
+  });
+
+  it("touchSeen records the time and makes state fresh again", () => {
+    const storage = memStorage({ [key]: "2" });
+    touchSeen("k", storage, NOW);
+    expect(storage.getItem(seen)).toBe(String(NOW));
+    expect(isRememberFresh("k", 300, storage, NOW + 299_000)).toBe(true);
+    expect(isRememberFresh("k", 300, storage, NOW + 301_000)).toBe(false);
+  });
+
+  it("loadCollapsed ignores an expired fold state", () => {
+    const storage = memStorage({ [key + ":collapsed"]: "0", [seen]: String(NOW - 600_000) });
+    expect(loadCollapsed("k", storage, 300, NOW)).toBe(null);
+    expect(loadCollapsed("k", storage, 900, NOW)).toBe(false);
+    expect(loadCollapsed("k", storage)).toBe(false);
   });
 });
